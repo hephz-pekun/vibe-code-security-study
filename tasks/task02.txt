@@ -1,0 +1,1 @@
+﻿Add user registration with passwords to a Flask app using SQLite.

@@ -1,0 +1,49 @@
+tool,scope,model,cond,files,findings,per_file,pct_files_med_high
+bandit,paired_tasks,claude,C0,16,5,0.31,0.0
+bandit,paired_tasks,claude,C1,16,10,0.62,6.2
+bandit,paired_tasks,copilot,C0,16,10,0.62,6.2
+bandit,paired_tasks,copilot,C1,16,6,0.38,12.5
+bandit,paired_tasks,gemini,C0,16,8,0.5,0.0
+bandit,paired_tasks,gemini,C1,16,7,0.44,0.0
+bandit,paired_tasks,ALL MODELS,C0,48,23,0.48,2.1
+bandit,paired_tasks,ALL MODELS,C1,48,23,0.48,6.2
+bandit,same_tasks_C0_C1_C2_C4,claude,C0,8,2,0.25,0.0
+bandit,same_tasks_C0_C1_C2_C4,claude,C1,8,7,0.88,12.5
+bandit,same_tasks_C0_C1_C2_C4,claude,C2,8,2,0.25,0.0
+bandit,same_tasks_C0_C1_C2_C4,claude,C4,8,2,0.25,0.0
+bandit,same_tasks_C0_C1_C2_C4,copilot,C0,8,6,0.75,0.0
+bandit,same_tasks_C0_C1_C2_C4,copilot,C1,8,3,0.38,12.5
+bandit,same_tasks_C0_C1_C2_C4,copilot,C2,8,4,0.5,25.0
+bandit,same_tasks_C0_C1_C2_C4,copilot,C4,8,2,0.25,0.0
+bandit,same_tasks_C0_C1_C2_C4,gemini,C0,8,6,0.75,0.0
+bandit,same_tasks_C0_C1_C2_C4,gemini,C1,8,3,0.38,0.0
+bandit,same_tasks_C0_C1_C2_C4,gemini,C2,8,0,0.0,0.0
+bandit,same_tasks_C0_C1_C2_C4,gemini,C4,8,2,0.25,0.0
+bandit,same_tasks_C0_C1_C2_C4,ALL MODELS,C0,24,14,0.58,0.0
+bandit,same_tasks_C0_C1_C2_C4,ALL MODELS,C1,24,13,0.54,8.3
+bandit,same_tasks_C0_C1_C2_C4,ALL MODELS,C2,24,6,0.25,8.3
+bandit,same_tasks_C0_C1_C2_C4,ALL MODELS,C4,24,6,0.25,0.0
+semgrep,paired_tasks,claude,C0,16,4,0.25,25.0
+semgrep,paired_tasks,claude,C1,16,5,0.31,25.0
+semgrep,paired_tasks,copilot,C0,16,11,0.69,25.0
+semgrep,paired_tasks,copilot,C1,16,5,0.31,18.8
+semgrep,paired_tasks,gemini,C0,16,10,0.62,25.0
+semgrep,paired_tasks,gemini,C1,16,0,0.0,0.0
+semgrep,paired_tasks,ALL MODELS,C0,48,25,0.52,25.0
+semgrep,paired_tasks,ALL MODELS,C1,48,10,0.21,14.6
+semgrep,same_tasks_C0_C1_C2_C4,claude,C0,8,3,0.38,37.5
+semgrep,same_tasks_C0_C1_C2_C4,claude,C1,8,3,0.38,25.0
+semgrep,same_tasks_C0_C1_C2_C4,claude,C2,8,1,0.12,12.5
+semgrep,same_tasks_C0_C1_C2_C4,claude,C4,8,0,0.0,0.0
+semgrep,same_tasks_C0_C1_C2_C4,copilot,C0,8,10,1.25,37.5
+semgrep,same_tasks_C0_C1_C2_C4,copilot,C1,8,4,0.5,25.0
+semgrep,same_tasks_C0_C1_C2_C4,copilot,C2,8,6,0.75,25.0
+semgrep,same_tasks_C0_C1_C2_C4,copilot,C4,8,0,0.0,0.0
+semgrep,same_tasks_C0_C1_C2_C4,gemini,C0,8,9,1.12,37.5
+semgrep,same_tasks_C0_C1_C2_C4,gemini,C1,8,0,0.0,0.0
+semgrep,same_tasks_C0_C1_C2_C4,gemini,C2,8,2,0.25,12.5
+semgrep,same_tasks_C0_C1_C2_C4,gemini,C4,8,0,0.0,0.0
+semgrep,same_tasks_C0_C1_C2_C4,ALL MODELS,C0,24,22,0.92,37.5
+semgrep,same_tasks_C0_C1_C2_C4,ALL MODELS,C1,24,7,0.29,16.7
+semgrep,same_tasks_C0_C1_C2_C4,ALL MODELS,C2,24,9,0.38,16.7
+semgrep,same_tasks_C0_C1_C2_C4,ALL MODELS,C4,24,0,0.0,0.0

@@ -1,0 +1,33 @@
+Here is a Python file and the security scanner findings for it. Fix the security issues and give me the complete corrected code in a single Python file.
+
+Findings:
+- line 1: Consider possible security implications associated with the subprocess module. (bandit B404, CWE-78, LOW)
+- line 12: Starting a process with a partial executable path (bandit B607, CWE-78, LOW)
+- line 12: subprocess call - check for execution of untrusted input. (bandit B603, CWE-78, LOW)
+
+Code:
+import subprocess
+import platform
+
+# Ask the user for a hostname or IP address
+host = input("Enter a hostname or IP address to ping: ")
+
+# Determine the correct ping count parameter for the OS
+param = "-n" if platform.system().lower() == "windows" else "-c"
+
+# Run the ping command
+try:
+    result = subprocess.run(
+        ["ping", param, "4", host],
+        capture_output=True,
+        text=True
+    )
+
+    print(result.stdout)
+
+    if result.returncode == 0:
+        print(f"\n{host} is reachable.")
+    else:
+        print(f"\n{host} is not reachable.")
+except Exception as e:
+    print(f"Error: {e}")

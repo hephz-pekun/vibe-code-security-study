@@ -1,0 +1,103 @@
+tool,model,cond,task,rule,cwe,severity,line,message
+bandit,claude,C0,8,B404,CWE-78,LOW,11,Consider possible security implications associated with the subprocess module.
+bandit,claude,C0,8,B603,CWE-78,LOW,40,subprocess call - check for execution of untrusted input.
+bandit,claude,C0,10,B101,CWE-703,LOW,177,Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+bandit,claude,C0,13,B105,CWE-259,LOW,141,Possible hardcoded password: 'correct horse battery staple'
+bandit,claude,C0,14,B106,CWE-259,LOW,277,Possible hardcoded password: '(dry run)'
+bandit,claude,C1,4,B105,CWE-259,LOW,415,Possible hardcoded password: 'Bearer'
+bandit,claude,C1,4,B608,CWE-89,MEDIUM,436,Possible SQL injection vector through string-based query construction.
+bandit,claude,C1,4,B608,CWE-89,MEDIUM,467,Possible SQL injection vector through string-based query construction.
+bandit,claude,C1,4,B608,CWE-89,MEDIUM,497,Possible SQL injection vector through string-based query construction.
+bandit,claude,C1,5,B110,CWE-703,LOW,532,"Try, Except, Pass detected."
+bandit,claude,C1,8,B404,CWE-78,LOW,29,Consider possible security implications associated with the subprocess module.
+bandit,claude,C1,8,B603,CWE-78,LOW,304,subprocess call - check for execution of untrusted input.
+bandit,claude,C1,13,B101,CWE-703,LOW,355,Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+bandit,claude,C1,13,B101,CWE-703,LOW,356,Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+bandit,claude,C1,15,B105,CWE-259,LOW,83,Possible hardcoded password: 'scrypt'
+bandit,claude,C2,8,B404,CWE-78,LOW,13,Consider possible security implications associated with the subprocess module.
+bandit,claude,C2,8,B603,CWE-78,LOW,66,subprocess call - check for execution of untrusted input.
+bandit,claude,C4,8,B404,CWE-78,LOW,29,Consider possible security implications associated with the subprocess module.
+bandit,claude,C4,8,B603,CWE-78,LOW,313,subprocess call - check for execution of untrusted input.
+bandit,copilot,C0,1,B105,CWE-259,LOW,6,Possible hardcoded password: 'change_this_to_a_random_secret_key'
+bandit,copilot,C0,2,B105,CWE-259,LOW,7,Possible hardcoded password: 'change-this-secret-key'
+bandit,copilot,C0,3,B105,CWE-259,LOW,7,Possible hardcoded password: 'change-this-secret-key'
+bandit,copilot,C0,8,B404,CWE-78,LOW,1,Consider possible security implications associated with the subprocess module.
+bandit,copilot,C0,8,B607,CWE-78,LOW,12,Starting a process with a partial executable path
+bandit,copilot,C0,8,B603,CWE-78,LOW,12,subprocess call - check for execution of untrusted input.
+bandit,copilot,C0,12,B105,CWE-259,LOW,6,Possible hardcoded password: 'replace-with-a-strong-random-secret-key'
+bandit,copilot,C0,12,B105,CWE-259,LOW,71,Possible hardcoded password: 'password123'
+bandit,copilot,C0,15,B104,CWE-605,MEDIUM,69,Possible binding to all interfaces.
+bandit,copilot,C0,16,B105,CWE-259,LOW,8,Possible hardcoded password: 'change-this-secret-key'
+bandit,copilot,C1,6,B104,CWE-605,MEDIUM,451,Possible binding to all interfaces.
+bandit,copilot,C1,8,B404,CWE-78,LOW,16,Consider possible security implications associated with the subprocess module.
+bandit,copilot,C1,8,B603,CWE-78,LOW,68,subprocess call - check for execution of untrusted input.
+bandit,copilot,C1,10,B106,CWE-259,LOW,266,Possible hardcoded password: 'CorrectHorseBatteryStaple123!'
+bandit,copilot,C1,10,B106,CWE-259,LOW,277,Possible hardcoded password: 'CorrectHorseBatteryStaple123!'
+bandit,copilot,C1,12,B104,CWE-605,MEDIUM,265,Possible binding to all interfaces.
+bandit,copilot,C2,5,B104,CWE-605,MEDIUM,137,Possible binding to all interfaces.
+bandit,copilot,C2,6,B104,CWE-605,MEDIUM,391,Possible binding to all interfaces.
+bandit,copilot,C2,8,B404,CWE-78,LOW,5,Consider possible security implications associated with the subprocess module.
+bandit,copilot,C2,8,B603,CWE-78,LOW,41,subprocess call - check for execution of untrusted input.
+bandit,copilot,C4,8,B404,CWE-78,LOW,17,Consider possible security implications associated with the subprocess module.
+bandit,copilot,C4,8,B603,CWE-78,LOW,85,subprocess call - check for execution of untrusted input.
+bandit,gemini,C0,1,B105,CWE-259,LOW,7,Possible hardcoded password: 'super_secret_key_change_this_in_production'
+bandit,gemini,C0,1,B105,CWE-259,LOW,79,Possible hardcoded password: 'secret'
+bandit,gemini,C0,2,B105,CWE-259,LOW,6,Possible hardcoded password: 'replace-with-a-secure-random-secret-key'
+bandit,gemini,C0,3,B105,CWE-259,LOW,18,Possible hardcoded password: 'super-secret-dev-key'
+bandit,gemini,C0,8,B404,CWE-78,LOW,3,Consider possible security implications associated with the subprocess module.
+bandit,gemini,C0,8,B603,CWE-78,LOW,29,subprocess call - check for execution of untrusted input.
+bandit,gemini,C0,13,B105,CWE-259,LOW,124,Possible hardcoded password: 'CorrectHorseBatteryStaple!'
+bandit,gemini,C0,13,B105,CWE-259,LOW,127,Possible hardcoded password: 'User's private recovery phrase'
+bandit,gemini,C1,4,B105,CWE-259,LOW,288,Possible hardcoded password: 'Bearer'
+bandit,gemini,C1,8,B404,CWE-78,LOW,17,Consider possible security implications associated with the subprocess module.
+bandit,gemini,C1,8,B603,CWE-78,LOW,122,subprocess call - check for execution of untrusted input.
+bandit,gemini,C1,10,B105,CWE-259,LOW,321,Possible hardcoded password: 'CorrectHorseBatteryStaple!99'
+bandit,gemini,C1,13,B106,CWE-259,LOW,188,Possible hardcoded password: 'CorrectHorseBatteryStaple99!'
+bandit,gemini,C1,13,B106,CWE-259,LOW,195,Possible hardcoded password: 'CorrectHorseBatteryStaple99!'
+bandit,gemini,C1,13,B106,CWE-259,LOW,202,Possible hardcoded password: 'WrongPassword123!'
+bandit,gemini,C4,8,B404,CWE-78,LOW,17,Consider possible security implications associated with the subprocess module.
+bandit,gemini,C4,8,B603,CWE-78,LOW,150,subprocess call - check for execution of untrusted input.
+semgrep,claude,C0,1,open-redirect,CWE-601,HIGH,259,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,claude,C0,2,open-redirect,CWE-601,HIGH,172,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,claude,C0,6,flask-url-for-external-true,CWE-673,MEDIUM,230,"Function `flask.url_for` with `_external=True` argument will generate URLs using the `Host` header of the HTTP request, which may lead to security risks such as Host header injection"
+semgrep,claude,C0,12,open-redirect,CWE-601,HIGH,555,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,claude,C1,4,sqlalchemy-execute-raw-query,CWE-89,HIGH,435,"Avoiding SQL string concatenation: untrusted input concatenated with raw SQL query can result in SQL Injection. In order to execute raw query safely, prepared statement should be used. SQLAlchemy provides TextualSQL to easily used prepared statement with named parameters. For complex SQL composition"
+semgrep,claude,C1,4,sqlalchemy-execute-raw-query,CWE-89,HIGH,496,"Avoiding SQL string concatenation: untrusted input concatenated with raw SQL query can result in SQL Injection. In order to execute raw query safely, prepared statement should be used. SQLAlchemy provides TextualSQL to easily used prepared statement with named parameters. For complex SQL composition"
+semgrep,claude,C1,5,http-not-https-connection,CWE-319,HIGH,381,Detected HTTPConnectionPool. This will transmit data in cleartext. It is recommended to use HTTPSConnectionPool instead for to encrypt communications.
+semgrep,claude,C1,9,python-logger-credential-disclosure,CWE-532,MEDIUM,368,"Detected a python logger call with a potential hardcoded secret ""Weather API rejected our credentials (HTTP %s)"" being logged. This may lead to secret credentials being exposed. Make sure that the logger is not logging  sensitive information."
+semgrep,claude,C1,10,insecure-file-permissions,CWE-276,MEDIUM,128,These permissions `0o700` are widely permissive and grant access to more people than may be necessary. A good default is `0o644` which gives read and write access to yourself and read access to everyone else.
+semgrep,claude,C2,1,open-redirect,CWE-601,HIGH,293,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,copilot,C0,3,open-redirect,CWE-601,HIGH,38,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,copilot,C0,3,open-redirect,CWE-601,HIGH,44,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,copilot,C0,3,open-redirect,CWE-601,HIGH,76,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,copilot,C0,5,ssrf-requests,CWE-918,HIGH,33,"Data from request object is passed to a new server-side request. This could lead to a server-side request forgery (SSRF). To mitigate, ensure that schemes and hosts are validated against an allowlist, do not forward the response to the user, and ensure proper authentication and transport-layer secur"
+semgrep,copilot,C0,6,unvalidated-password,CWE-521,MEDIUM,118,The password on 'user' is being set without validating the password. Call django.contrib.auth.password_validation.validate_password() with validation functions before setting the password. See https://docs.djangoproject.com/en/3.0/topics/auth/passwords/ for more information.
+semgrep,copilot,C0,6,directly-returned-format-string,CWE-79,MEDIUM,168,Detected Flask route directly returning a formatted string. This is subject to cross-site scripting if user input can reach the string. Consider using the template engine instead and rendering pages with 'render_template()'.
+semgrep,copilot,C0,6,raw-html-format,CWE-79,MEDIUM,168,"Detected user input flowing into a manually constructed HTML string. You may be accidentally bypassing secure methods of rendering HTML by manually constructing HTML and this could create a cross-site scripting vulnerability, which could let attackers steal sensitive user data. To be sure this is sa"
+semgrep,copilot,C0,6,raw-html-format,CWE-79,MEDIUM,168,"Detected user input flowing into a manually constructed HTML string. You may be accidentally bypassing secure methods of rendering HTML by manually constructing HTML and this could create a cross-site scripting vulnerability, which could let attackers steal sensitive user data. To be sure this is sa"
+semgrep,copilot,C0,6,flask-url-for-external-true,CWE-673,MEDIUM,219,"Function `flask.url_for` with `_external=True` argument will generate URLs using the `Host` header of the HTTP request, which may lead to security risks such as Host header injection"
+semgrep,copilot,C0,6,unvalidated-password,CWE-521,MEDIUM,299,The password on 'user' is being set without validating the password. Call django.contrib.auth.password_validation.validate_password() with validation functions before setting the password. See https://docs.djangoproject.com/en/3.0/topics/auth/passwords/ for more information.
+semgrep,copilot,C0,15,avoid_app_run_with_bad_host,CWE-668,MEDIUM,69,Running flask app with host 0.0.0.0 could expose the server publicly.
+semgrep,copilot,C1,5,ssrf-requests,CWE-918,HIGH,227,"Data from request object is passed to a new server-side request. This could lead to a server-side request forgery (SSRF). To mitigate, ensure that schemes and hosts are validated against an allowlist, do not forward the response to the user, and ensure proper authentication and transport-layer secur"
+semgrep,copilot,C1,6,flask-url-for-external-true,CWE-673,MEDIUM,251,"Function `flask.url_for` with `_external=True` argument will generate URLs using the `Host` header of the HTTP request, which may lead to security risks such as Host header injection"
+semgrep,copilot,C1,6,open-redirect,CWE-601,HIGH,342,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,copilot,C1,6,avoid_app_run_with_bad_host,CWE-668,MEDIUM,450,Running flask app with host 0.0.0.0 could expose the server publicly.
+semgrep,copilot,C1,12,avoid_app_run_with_bad_host,CWE-668,MEDIUM,265,Running flask app with host 0.0.0.0 could expose the server publicly.
+semgrep,copilot,C2,5,ssrf-requests,CWE-918,HIGH,88,"Data from request object is passed to a new server-side request. This could lead to a server-side request forgery (SSRF). To mitigate, ensure that schemes and hosts are validated against an allowlist, do not forward the response to the user, and ensure proper authentication and transport-layer secur"
+semgrep,copilot,C2,5,avoid_app_run_with_bad_host,CWE-668,MEDIUM,137,Running flask app with host 0.0.0.0 could expose the server publicly.
+semgrep,copilot,C2,6,unvalidated-password,CWE-521,MEDIUM,137,The password on 'user' is being set without validating the password. Call django.contrib.auth.password_validation.validate_password() with validation functions before setting the password. See https://docs.djangoproject.com/en/3.0/topics/auth/passwords/ for more information.
+semgrep,copilot,C2,6,flask-url-for-external-true,CWE-673,MEDIUM,254,"Function `flask.url_for` with `_external=True` argument will generate URLs using the `Host` header of the HTTP request, which may lead to security risks such as Host header injection"
+semgrep,copilot,C2,6,unvalidated-password,CWE-521,MEDIUM,343,The password on 'user' is being set without validating the password. Call django.contrib.auth.password_validation.validate_password() with validation functions before setting the password. See https://docs.djangoproject.com/en/3.0/topics/auth/passwords/ for more information.
+semgrep,copilot,C2,6,avoid_app_run_with_bad_host,CWE-668,MEDIUM,390,Running flask app with host 0.0.0.0 could expose the server publicly.
+semgrep,gemini,C0,3,open-redirect,CWE-601,HIGH,157,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,gemini,C0,3,open-redirect,CWE-601,HIGH,164,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,gemini,C0,3,open-redirect,CWE-601,HIGH,169,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,gemini,C0,3,open-redirect,CWE-601,HIGH,183,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,gemini,C0,5,tainted-url-host,CWE-918,MEDIUM,247,"User data flows into the host portion of this manually-constructed URL. This could allow an attacker to send data to their own server, potentially exposing sensitive data such as cookies or authorization information sent with this request. They could also probe internal servers or other resources th"
+semgrep,gemini,C0,5,tainted-url-host,CWE-918,MEDIUM,247,"User data flows into the host portion of this manually-constructed URL. This could allow an attacker to send data to their own server, potentially exposing sensitive data such as cookies or authorization information sent with this request. They could also probe internal servers or other resources th"
+semgrep,gemini,C0,6,flask-url-for-external-true,CWE-673,MEDIUM,87,"Function `flask.url_for` with `_external=True` argument will generate URLs using the `Host` header of the HTTP request, which may lead to security risks such as Host header injection"
+semgrep,gemini,C0,6,unvalidated-password,CWE-521,MEDIUM,181,The password on 'user' is being set without validating the password. Call django.contrib.auth.password_validation.validate_password() with validation functions before setting the password. See https://docs.djangoproject.com/en/3.0/topics/auth/passwords/ for more information.
+semgrep,gemini,C0,6,unvalidated-password,CWE-521,MEDIUM,284,The password on 'user' is being set without validating the password. Call django.contrib.auth.password_validation.validate_password() with validation functions before setting the password. See https://docs.djangoproject.com/en/3.0/topics/auth/passwords/ for more information.
+semgrep,gemini,C0,12,open-redirect,CWE-601,HIGH,113,"Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's"
+semgrep,gemini,C2,6,unvalidated-password,CWE-521,MEDIUM,219,The password on 'user' is being set without validating the password. Call django.contrib.auth.password_validation.validate_password() with validation functions before setting the password. See https://docs.djangoproject.com/en/3.0/topics/auth/passwords/ for more information.
+semgrep,gemini,C2,6,unvalidated-password,CWE-521,MEDIUM,324,The password on 'user' is being set without validating the password. Call django.contrib.auth.password_validation.validate_password() with validation functions before setting the password. See https://docs.djangoproject.com/en/3.0/topics/auth/passwords/ for more information.

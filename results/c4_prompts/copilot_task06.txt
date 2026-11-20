@@ -1,0 +1,463 @@
+Here is a Python file and the security scanner findings for it. Fix the security issues and give me the complete corrected code in a single Python file.
+
+Findings:
+- line 251: Function `flask.url_for` with `_external=True` argument will generate URLs using the `Host` header of the HTTP request, which may lead to security risks such as Host header injection (semgrep flask-url-for-external-true, CWE-673, MEDIUM)
+- line 342: Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's (semgrep open-redirect, CWE-601, HIGH)
+- line 450: Running flask app with host 0.0.0.0 could expose the server publicly. (semgrep avoid_app_run_with_bad_host, CWE-668, MEDIUM)
+- line 451: Possible binding to all interfaces. (bandit B104, CWE-605, MEDIUM)
+
+Code:
+import os
+import re
+import sqlite3
+import secrets
+import hashlib
+from datetime import datetime, timedelta, timezone
+
+from flask import (
+    Flask,
+    request,
+    render_template_string,
+    redirect,
+    url_for,
+    flash
+)
+from flask_wtf import FlaskForm
+from wtforms import StringField, PasswordField
+from wtforms.validators import DataRequired, Email, Length
+from werkzeug.security import generate_password_hash, check_password_hash
+from dotenv import load_dotenv
+
+load_dotenv()
+
+###############################################################################
+# Configuration
+###############################################################################
+
+app = Flask(__name__)
+
+app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY")
+if not app.config["SECRET_KEY"]:
+    raise RuntimeError("FLASK_SECRET_KEY environment variable is required")
+
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+DATABASE_PATH = os.environ.get("DATABASE_PATH", "app.db")
+MAIL_FROM = os.environ.get("MAIL_FROM", "noreply@example.com")
+
+RESET_TOKEN_EXPIRY_MINUTES = 30
+PASSWORD_MIN_LENGTH = 12
+
+###############################################################################
+# Database Helpers
+###############################################################################
+
+
+def get_db():
+    conn = sqlite3.connect(DATABASE_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_db()
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            token_hash TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+
+    conn.commit()
+    conn.close()
+
+
+###############################################################################
+# Forms
+###############################################################################
+
+
+class ForgotPasswordForm(FlaskForm):
+    email = StringField(
+        "Email",
+        validators=[
+            DataRequired(),
+            Email(),
+            Length(max=320),
+        ],
+    )
+
+
+class ResetPasswordForm(FlaskForm):
+    password = PasswordField(
+        "Password",
+        validators=[
+            DataRequired(),
+            Length(min=PASSWORD_MIN_LENGTH, max=128),
+        ],
+    )
+
+
+###############################################################################
+# Validation
+###############################################################################
+
+
+def validate_password_strength(password: str):
+    """
+    Example password policy.
+    Adjust to organizational requirements.
+    """
+    if len(password) < PASSWORD_MIN_LENGTH:
+        return False
+
+    patterns = [
+        r"[A-Z]",
+        r"[a-z]",
+        r"\d",
+        r"[!@#$%^&*()_\-+=\[\]{}|;:,.<>?]",
+    ]
+
+    return all(re.search(pattern, password) for pattern in patterns)
+
+
+###############################################################################
+# Token Functions
+###############################################################################
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def generate_reset_token():
+    """
+    Returns:
+        plaintext_token, hashed_token
+    """
+    token = secrets.token_urlsafe(32)
+    return token, hash_token(token)
+
+
+###############################################################################
+# Email Sender
+###############################################################################
+
+
+def send_reset_email(recipient_email: str, reset_link: str):
+    """
+    Replace with SendGrid, Amazon SES, Mailgun, Postmark, etc.
+
+    DO NOT log the token in production.
+    """
+    print("\n=== PASSWORD RESET EMAIL ===")
+    print(f"From: {MAIL_FROM}")
+    print(f"To: {recipient_email}")
+    print("Subject: Password Reset Request")
+    print()
+    print(
+        f"To reset your password, visit:\n{reset_link}\n\n"
+        f"This link expires in {RESET_TOKEN_EXPIRY_MINUTES} minutes."
+    )
+    print("============================\n")
+
+
+###############################################################################
+# Rate Limiting Placeholder
+###############################################################################
+
+
+def check_rate_limit():
+    """
+    Integrate Flask-Limiter in production:
+
+    pip install Flask-Limiter
+
+    Example:
+    limiter.limit("5/minute")
+    """
+    return True
+
+
+###############################################################################
+# Routes
+###############################################################################
+
+
+@app.route("/")
+def home():
+    return """
+    <h2>Demo</h2>
+    <ul>
+        <li><a href='/forgot-password'>Forgot Password</a></li>
+    </ul>
+    """
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    form = ForgotPasswordForm()
+
+    if form.validate_on_submit():
+
+        if not check_rate_limit():
+            flash("Please try again later.")
+            return redirect(url_for("forgot_password"))
+
+        email = form.email.data.strip().lower()
+
+        conn = get_db()
+
+        user = conn.execute(
+            "SELECT id, email FROM users WHERE email = ?",
+            (email,),
+        ).fetchone()
+
+        if user:
+            token, token_hash = generate_reset_token()
+
+            expires_at = (
+                datetime.now(timezone.utc)
+                + timedelta(minutes=RESET_TOKEN_EXPIRY_MINUTES)
+            )
+
+            conn.execute(
+                """
+                INSERT INTO password_reset_tokens
+                (user_id, token_hash, expires_at, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    user["id"],
+                    token_hash,
+                    expires_at.isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+            conn.commit()
+
+            reset_url = url_for(
+                "reset_password",
+                token=token,
+                _external=True,
+            )
+
+            send_reset_email(user["email"], reset_url)
+
+        conn.close()
+
+        # Generic message prevents user enumeration
+        flash(
+            "If an account exists for that email address, "
+            "a password reset email has been sent."
+        )
+
+        return redirect(url_for("forgot_password"))
+
+    return render_template_string(
+        """
+        <h2>Forgot Password</h2>
+
+        {% with messages = get_flashed_messages() %}
+          {% for message in messages %}
+            <p>{{ message }}</p>
+          {% endfor %}
+        {% endwith %}
+
+        <form method="POST">
+          {{ form.hidden_tag() }}
+
+          <p>{{ form.email.label }}</p>
+          <p>{{ form.email(size=40) }}</p>
+
+          <button type="submit">
+            Send Reset Link
+          </button>
+        </form>
+        """,
+        form=form,
+    )
+
+
+@app.route("/reset-password/<token>", methods=["GET", "POST"])
+def reset_password(token):
+    form = ResetPasswordForm()
+
+    token_hash = hash_token(token)
+
+    conn = get_db()
+
+    reset_record = conn.execute(
+        """
+        SELECT
+            prt.id,
+            prt.user_id,
+            prt.expires_at,
+            prt.used
+        FROM password_reset_tokens prt
+        WHERE prt.token_hash = ?
+        """,
+        (token_hash,),
+    ).fetchone()
+
+    valid_token = False
+
+    if reset_record:
+        expires_at = datetime.fromisoformat(
+            reset_record["expires_at"]
+        )
+
+        valid_token = (
+            reset_record["used"] == 0
+            and expires_at > datetime.now(timezone.utc)
+        )
+
+    if not valid_token:
+        conn.close()
+        flash("Invalid or expired reset link.")
+        return redirect(url_for("forgot_password"))
+
+    if form.validate_on_submit():
+
+        password = form.password.data
+
+        if not validate_password_strength(password):
+            flash(
+                "Password must contain upper, lower, number, "
+                "special character and be at least 12 characters."
+            )
+            conn.close()
+            return redirect(request.url)
+
+        password_hash = generate_password_hash(
+            password,
+            method="pbkdf2:sha256:600000"
+        )
+
+        conn.execute(
+            """
+            UPDATE users
+            SET password_hash = ?
+            WHERE id = ?
+            """,
+            (password_hash, reset_record["user_id"]),
+        )
+
+        conn.execute(
+            """
+            UPDATE password_reset_tokens
+            SET used = 1
+            WHERE id = ?
+            """,
+            (reset_record["id"],),
+        )
+
+        # Invalidate all outstanding reset tokens
+        conn.execute(
+            """
+            UPDATE password_reset_tokens
+            SET used = 1
+            WHERE user_id = ?
+            """,
+            (reset_record["user_id"],),
+        )
+
+        conn.commit()
+        conn.close()
+
+        flash("Password updated successfully.")
+        return redirect(url_for("home"))
+
+    conn.close()
+
+    return render_template_string(
+        """
+        <h2>Reset Password</h2>
+
+        {% with messages = get_flashed_messages() %}
+          {% for message in messages %}
+            <p>{{ message }}</p>
+          {% endfor %}
+        {% endwith %}
+
+        <form method="POST">
+          {{ form.hidden_tag() }}
+
+          <p>{{ form.password.label }}</p>
+          <p>{{ form.password(size=40) }}</p>
+
+          <button type="submit">
+            Update Password
+          </button>
+        </form>
+        """,
+        form=form,
+    )
+
+
+###############################################################################
+# Example User Creation
+###############################################################################
+
+
+def create_demo_user():
+    conn = get_db()
+
+    existing = conn.execute(
+        "SELECT id FROM users WHERE email = ?",
+        ("demo@example.com",),
+    ).fetchone()
+
+    if not existing:
+        conn.execute(
+            """
+            INSERT INTO users (email, password_hash)
+            VALUES (?, ?)
+            """,
+            (
+                "demo@example.com",
+                generate_password_hash(
+                    "DemoPassword123!",
+                    method="pbkdf2:sha256:600000"
+                ),
+            ),
+        )
+        conn.commit()
+
+    conn.close()
+
+
+###############################################################################
+# Startup
+###############################################################################
+
+if __name__ == "__main__":
+    init_db()
+    create_demo_user()
+
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        debug=False,
+    )

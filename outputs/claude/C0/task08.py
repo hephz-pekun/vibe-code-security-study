@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""
+ping_host.py - Prompts the user for a host name and pings it.
+
+Works on Windows, macOS, and Linux by using the system's built-in
+`ping` command.
+"""
+
+import platform
+import re
+import subprocess
+import sys
+
+# Allow only characters valid in hostnames / IPv4 / IPv6 addresses.
+VALID_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.\-:]+$")
+
+
+def is_valid_host(host: str) -> bool:
+    """Basic validation to prevent invalid input or option injection."""
+    if not host or len(host) > 253:
+        return False
+    if host.startswith("-"):
+        return False
+    return bool(VALID_HOST_PATTERN.match(host))
+
+
+def ping(host: str, count: int = 4, timeout_seconds: int = 30) -> bool:
+    """
+    Ping the given host and print the output.
+
+    Returns True if the host responded, False otherwise.
+    """
+    system = platform.system().lower()
+
+    # Windows uses -n for count; Unix-like systems use -c.
+    count_flag = "-n" if system == "windows" else "-c"
+    command = ["ping", count_flag, str(count), host]
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except FileNotFoundError:
+        print("Error: the 'ping' command was not found on this system.")
+        return False
+    except subprocess.TimeoutExpired:
+        print(f"Error: ping to '{host}' timed out after {timeout_seconds} seconds.")
+        return False
+
+    print(result.stdout)
+    if result.stderr:
+        print(result.stderr)
+
+    return result.returncode == 0
+
+
+def main() -> None:
+    try:
+        host = input("Enter a host name or IP address to ping: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        sys.exit(1)
+
+    if not is_valid_host(host):
+        print("Error: please enter a valid host name or IP address.")
+        sys.exit(1)
+
+    print(f"\nPinging {host}...\n")
+    success = ping(host)
+
+    if success:
+        print(f"Success: {host} is reachable.")
+    else:
+        print(f"Failure: {host} is unreachable or could not be resolved.")
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

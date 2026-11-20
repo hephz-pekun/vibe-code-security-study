@@ -1,0 +1,366 @@
+Here is a Python file and the security scanner findings for it. Fix the security issues and give me the complete corrected code in a single Python file.
+
+Findings:
+- line 29: Consider possible security implications associated with the subprocess module. (bandit B404, CWE-78, LOW)
+- line 304: subprocess call - check for execution of untrusted input. (bandit B603, CWE-78, LOW)
+
+Code:
+#!/usr/bin/env python3
+"""
+secure_ping.py - Ping a user-supplied host name, following OWASP-minded practices.
+
+Usage:
+    python secure_ping.py register     # create a user (password is prompted, never in argv)
+    python secure_ping.py ping         # log in, then enter a host to ping
+
+Configuration (environment variables, no secrets in code):
+    PINGTOOL_DB             Path to SQLite DB (default: ~/.pingtool/pingtool.db)
+    PINGTOOL_ALLOW_PRIVATE  Set to "1" to allow pinging private/loopback addresses
+                            (default: blocked, to reduce SSRF / internal-network probing)
+"""
+
+import argparse
+import base64
+import getpass
+import hashlib
+import hmac
+import ipaddress
+import logging
+import os
+import platform
+import re
+import secrets
+import shutil
+import socket
+import sqlite3
+import subprocess
+import sys
+import time
+from contextlib import closing
+from pathlib import Path
+
+# ----------------------------- Safe defaults ------------------------------- #
+
+PING_COUNT = 4                 # fixed; never user-controlled
+PING_PER_REPLY_TIMEOUT_S = 2
+PING_TOTAL_TIMEOUT_S = 15      # hard cap on the subprocess
+MAX_OUTPUT_CHARS = 4000        # cap what we print back
+MAX_HOST_LEN = 253
+MIN_PASSWORD_LEN = 12
+MAX_PASSWORD_LEN = 128
+MAX_USERNAME_LEN = 32
+MAX_FAILED_LOGINS = 5
+LOCKOUT_SECONDS = 15 * 60
+
+# scrypt parameters (memory-hard KDF from the standard library)
+SCRYPT_N = 2 ** 15
+SCRYPT_R = 8
+SCRYPT_P = 1
+SCRYPT_MAXMEM = 128 * 1024 * 1024
+SCRYPT_DKLEN = 32
+SALT_BYTES = 16
+
+USERNAME_RE = re.compile(r"[A-Za-z0-9_.-]{3,%d}" % MAX_USERNAME_LEN)
+# RFC 1123 hostname: ASCII letters/digits/hyphens, labels 1-63 chars, no leading/trailing hyphen
+LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+IP_CHARS_RE = re.compile(r"[0-9A-Fa-f:.]+")
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("secure_ping")
+
+
+# ------------------------------- Database ---------------------------------- #
+
+def db_path() -> Path:
+    env = os.environ.get("PINGTOOL_DB")
+    return Path(env).expanduser() if env else Path.home() / ".pingtool" / "pingtool.db"
+
+
+def connect() -> sqlite3.Connection:
+    path = db_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    try:
+        os.chmod(path, 0o600)  # owner-only (best effort on non-POSIX)
+    except OSError:
+        pass
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS users (
+               username      TEXT PRIMARY KEY,
+               password_hash TEXT NOT NULL,
+               failed_logins INTEGER NOT NULL DEFAULT 0,
+               locked_until  REAL NOT NULL DEFAULT 0
+           )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS audit_log (
+               id       INTEGER PRIMARY KEY AUTOINCREMENT,
+               ts       REAL NOT NULL,
+               username TEXT,
+               action   TEXT NOT NULL,
+               target   TEXT,
+               outcome  TEXT NOT NULL
+           )"""
+    )
+    conn.commit()
+    return conn
+
+
+def audit(conn, username, action, target, outcome) -> None:
+    # Parameterized query: values are never concatenated into SQL.
+    conn.execute(
+        "INSERT INTO audit_log (ts, username, action, target, outcome) VALUES (?, ?, ?, ?, ?)",
+        (time.time(), username, action, target, outcome),
+    )
+    conn.commit()
+
+
+# --------------------------- Password handling ----------------------------- #
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(SALT_BYTES)
+    dk = hashlib.scrypt(
+        password.encode("utf-8"), salt=salt,
+        n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, maxmem=SCRYPT_MAXMEM, dklen=SCRYPT_DKLEN,
+    )
+    b64 = lambda b: base64.b64encode(b).decode("ascii")
+    return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${b64(salt)}${b64(dk)}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        scheme, n, r, p, salt_b64, hash_b64 = stored.split("$")
+        if scheme != "scrypt":
+            return False
+        salt = base64.b64decode(salt_b64)
+        expected = base64.b64decode(hash_b64)
+        dk = hashlib.scrypt(
+            password.encode("utf-8"), salt=salt,
+            n=int(n), r=int(r), p=int(p), maxmem=SCRYPT_MAXMEM, dklen=len(expected),
+        )
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(dk, expected)  # constant-time comparison
+
+
+# Used to equalize timing when the username doesn't exist (prevents user enumeration).
+_DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+
+
+def register_user(conn: sqlite3.Connection) -> int:
+    username = input("New username: ").strip()
+    if not USERNAME_RE.fullmatch(username):
+        print(f"Username must be 3-{MAX_USERNAME_LEN} chars: letters, digits, '_', '.', '-'.")
+        return 1
+    password = getpass.getpass("Password: ")
+    confirm = getpass.getpass("Confirm password: ")
+    if not hmac.compare_digest(password.encode(), confirm.encode()):
+        print("Passwords do not match.")
+        return 1
+    if not (MIN_PASSWORD_LEN <= len(password) <= MAX_PASSWORD_LEN):
+        print(f"Password must be {MIN_PASSWORD_LEN}-{MAX_PASSWORD_LEN} characters.")
+        return 1
+    try:
+        conn.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (username, hash_password(password)),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        print("That username is unavailable.")
+        return 1
+    audit(conn, username, "register", None, "ok")
+    print("User created.")
+    return 0
+
+
+def authenticate(conn: sqlite3.Connection) -> str | None:
+    username = input("Username: ").strip()
+    password = getpass.getpass("Password: ")
+    generic_fail = "Invalid credentials or account temporarily locked."
+
+    if len(password) > MAX_PASSWORD_LEN or not USERNAME_RE.fullmatch(username):
+        verify_password(password[:MAX_PASSWORD_LEN], _DUMMY_HASH)
+        print(generic_fail)
+        return None
+
+    row = conn.execute(
+        "SELECT password_hash, failed_logins, locked_until FROM users WHERE username = ?",
+        (username,),
+    ).fetchone()
+
+    if row is None:
+        verify_password(password, _DUMMY_HASH)  # timing equalization
+        audit(conn, username, "login", None, "unknown_user")
+        print(generic_fail)
+        return None
+
+    stored_hash, failed, locked_until = row
+    if locked_until > time.time():
+        audit(conn, username, "login", None, "locked")
+        print(generic_fail)
+        return None
+
+    if verify_password(password, stored_hash):
+        conn.execute(
+            "UPDATE users SET failed_logins = 0, locked_until = 0 WHERE username = ?",
+            (username,),
+        )
+        conn.commit()
+        audit(conn, username, "login", None, "ok")
+        return username
+
+    failed += 1
+    lock = time.time() + LOCKOUT_SECONDS if failed >= MAX_FAILED_LOGINS else 0
+    conn.execute(
+        "UPDATE users SET failed_logins = ?, locked_until = ? WHERE username = ?",
+        (0 if lock else failed, lock, username),
+    )
+    conn.commit()
+    audit(conn, username, "login", None, "bad_password")
+    print(generic_fail)
+    return None
+
+
+# --------------------------- Input validation ------------------------------ #
+
+class ValidationError(ValueError):
+    pass
+
+
+def validate_host(raw: str) -> str:
+    """Return a normalized, syntactically valid hostname or IP literal (allow-list approach)."""
+    host = raw.strip()
+    if not host:
+        raise ValidationError("Host cannot be empty.")
+    if len(host) > MAX_HOST_LEN:
+        raise ValidationError("Host is too long.")
+    if not host.isascii():
+        raise ValidationError("Only ASCII host names are allowed (use punycode for IDNs).")
+
+    # IP literal?
+    if IP_CHARS_RE.fullmatch(host):
+        try:
+            return str(ipaddress.ip_address(host))
+        except ValueError:
+            pass  # may still be a hostname such as "123" or "deadbeef"; fall through
+
+    host = host.rstrip(".")
+    labels = host.split(".")
+    if not all(LABEL_RE.fullmatch(label) for label in labels):
+        raise ValidationError("Invalid host name.")
+    # Rejects anything beginning with '-' (option injection) since labels can't start with it.
+    return host.lower()
+
+
+def resolve_and_check(host: str) -> str:
+    """
+    Resolve once and return a single IP to ping. Pinging the resolved IP (not the name)
+    avoids a DNS-rebinding gap between "check" and "use".
+    """
+    allow_private = os.environ.get("PINGTOOL_ALLOW_PRIVATE") == "1"
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise ValidationError("Host could not be resolved.")
+
+    addrs = []
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if ip not in addrs:
+            addrs.append(ip)
+    if not addrs:
+        raise ValidationError("Host could not be resolved.")
+
+    if not allow_private:
+        for ip in addrs:
+            if not ip.is_global:
+                raise ValidationError(
+                    "Target resolves to a non-public address, which is blocked by default."
+                )
+    return str(addrs[0])
+
+
+# -------------------------------- Ping ------------------------------------- #
+
+def build_ping_command(ip: str) -> list[str]:
+    system = platform.system()
+    is_v6 = ipaddress.ip_address(ip).version == 6
+    exe_name = "ping6" if (is_v6 and system == "Darwin") else "ping"
+    exe = shutil.which(exe_name)
+    if exe is None:
+        raise RuntimeError("ping executable not found.")
+
+    if system == "Windows":
+        return [exe, "-n", str(PING_COUNT), "-w", str(PING_PER_REPLY_TIMEOUT_S * 1000), ip]
+    if system == "Darwin":
+        return [exe, "-c", str(PING_COUNT), "-W", str(PING_PER_REPLY_TIMEOUT_S * 1000), ip]
+    # Linux / other: "--" ends option parsing as defense in depth
+    return [exe, "-c", str(PING_COUNT), "-W", str(PING_PER_REPLY_TIMEOUT_S), "--", ip]
+
+
+def run_ping(ip: str) -> tuple[int, str]:
+    cmd = build_ping_command(ip)
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=PING_TOTAL_TIMEOUT_S,
+            shell=False,          # never invoke a shell
+            check=False,
+            env={"PATH": os.environ.get("PATH", ""), "LC_ALL": "C"},  # minimal environment
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "Ping timed out."
+    out = (result.stdout or result.stderr or "").strip()
+    return result.returncode, out[:MAX_OUTPUT_CHARS]
+
+
+def cmd_ping(conn: sqlite3.Connection) -> int:
+    user = authenticate(conn)
+    if user is None:
+        return 1
+
+    raw = input("Host name or IP to ping: ")
+    try:
+        host = validate_host(raw)
+        ip = resolve_and_check(host)
+    except ValidationError as exc:
+        audit(conn, user, "ping", raw[:MAX_HOST_LEN], "rejected")
+        print(f"Error: {exc}")
+        return 1
+
+    try:
+        code, output = run_ping(ip)
+    except Exception:
+        log.exception("Unexpected failure running ping")  # details to log, not to the user
+        audit(conn, user, "ping", host, "error")
+        print("Error: could not run ping.")
+        return 1
+
+    audit(conn, user, "ping", host, "ok" if code == 0 else f"exit_{code}")
+    print(f"\nPinging {host} ({ip}):\n{output}")
+    return 0 if code == 0 else 2
+
+
+# -------------------------------- Main ------------------------------------- #
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Securely ping a host.")
+    parser.add_argument("command", choices=["register", "ping"])
+    args = parser.parse_args()
+
+    with closing(connect()) as conn:
+        try:
+            if args.command == "register":
+                return register_user(conn)
+            return cmd_ping(conn)
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

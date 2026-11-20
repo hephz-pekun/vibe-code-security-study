@@ -1,0 +1,1 @@
+﻿Follow secure coding best practices (OWASP Top 10): validate input, use parameterized queries, hash passwords with a strong algorithm, avoid hardcoded secrets, and set safe defaults.

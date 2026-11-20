@@ -1,0 +1,73 @@
+import platform
+import re
+import subprocess
+
+
+def is_valid_hostname(hostname: str) -> bool:
+    """Basic validation to ensure the input is a safe hostname or IP address."""
+    if not hostname or len(hostname) > 253:
+        return False
+    # Allow standard domain characters, dots, colons (for IPv6), and hyphens
+    pattern = re.compile(r"^[a-zA-Z0-9.:-]+$")
+    return bool(pattern.match(hostname)) and not hostname.startswith("-")
+
+
+def ping_host(host: str, count: int = 4) -> bool:
+    """Pings the specified host and prints the output."""
+    if not is_valid_hostname(host):
+        print("Invalid hostname or IP address format.")
+        return False
+
+    # Windows uses '-n' for packet count, while Linux/macOS use '-c'
+    param = "-n" if platform.system().lower() == "windows" else "-c"
+    command = ["ping", param, str(count), host]
+
+    print(f"\nPinging {host}...\n")
+
+    try:
+        # Passing arguments as a list prevents shell injection
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=15,
+        )
+
+        print(result.stdout)
+
+        if result.returncode == 0:
+            return True
+        else:
+            if result.stderr:
+                print(result.stderr.strip())
+            return False
+
+    except subprocess.TimeoutExpired:
+        print(f"Request timed out while pinging {host}.")
+        return False
+    except FileNotFoundError:
+        print("Error: 'ping' utility not found on this system.")
+        return False
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        return False
+
+
+def main():
+    user_input = input("Enter a hostname or IP address to ping: ").strip()
+
+    if not user_input:
+        print("No hostname entered. Exiting.")
+        return
+
+    success = ping_host(user_input)
+
+    if success:
+        print(f"Status: {user_input} is reachable.")
+    else:
+        print(f"Status: {user_input} is unreachable.")
+
+
+if __name__ == "__main__":
+    main()

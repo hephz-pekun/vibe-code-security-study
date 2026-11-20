@@ -1,0 +1,315 @@
+import sqlite3
+from datetime import datetime, timezone
+from flask import Flask, g, jsonify, render_template_string, request
+
+app = Flask(__name__)
+DATABASE = "notes.db"
+
+
+# ---------------------------------------------------------------------------
+# Database Helpers
+# ---------------------------------------------------------------------------
+def get_db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DATABASE)
+        g.db.row_factory = sqlite3.Row
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(exception=None):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def init_db():
+    with sqlite3.connect(DATABASE) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
+def serialize_note(row):
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "content": row["content"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Frontend UI (Single-Page App using the REST API)
+# ---------------------------------------------------------------------------
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flask Notes App</title>
+    <style>
+        :root {
+            --bg: #f4f6f9;
+            --card: #ffffff;
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --danger: #dc2626;
+            --danger-hover: #b91c1c;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --border: #e5e7eb;
+        }
+        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background: var(--bg); color: var(--text); margin: 0; padding: 2rem 1rem; }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { margin-top: 0; font-size: 1.75rem; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+        .form-group { margin-bottom: 1rem; }
+        label { display: block; font-weight: 600; margin-bottom: 0.35rem; font-size: 0.9rem; }
+        input, textarea { width: 100%; padding: 0.6rem; border: 1px solid var(--border); border-radius: 6px; font-size: 1rem; }
+        textarea { resize: vertical; min-height: 100px; }
+        button { background: var(--primary); color: white; border: none; padding: 0.6rem 1.1rem; border-radius: 6px; font-size: 0.95rem; cursor: pointer; font-weight: 500; }
+        button:hover { background: var(--primary-hover); }
+        button.secondary { background: #6b7280; }
+        button.secondary:hover { background: #4b5563; }
+        button.danger { background: var(--danger); }
+        button.danger:hover { background: var(--danger-hover); }
+        .note-item { border-bottom: 1px solid var(--border); padding: 1rem 0; }
+        .note-item:last-child { border-bottom: none; padding-bottom: 0; }
+        .note-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+        .note-title { font-size: 1.15rem; font-weight: 600; margin: 0 0 0.25rem 0; }
+        .note-meta { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; }
+        .note-content { white-space: pre-wrap; margin: 0; line-height: 1.5; }
+        .actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Notes</h1>
+
+    <div class="card">
+        <h3 id="form-heading" style="margin-top:0;">Create a New Note</h3>
+        <form id="note-form">
+            <input type="hidden" id="note-id">
+            <div class="form-group">
+                <label for="title">Title</label>
+                <input type="text" id="title" required placeholder="Note title...">
+            </div>
+            <div class="form-group">
+                <label for="content">Content</label>
+                <textarea id="content" required placeholder="Write your note here..."></textarea>
+            </div>
+            <button type="submit" id="submit-btn">Save Note</button>
+            <button type="button" id="cancel-btn" class="secondary hidden" onclick="resetForm()">Cancel</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <h3 style="margin-top:0;">Saved Notes</h3>
+        <div id="notes-list">Loading...</div>
+    </div>
+</div>
+
+<script>
+    const form = document.getElementById('note-form');
+    const noteIdInput = document.getElementById('note-id');
+    const titleInput = document.getElementById('title');
+    const contentInput = document.getElementById('content');
+    const formHeading = document.getElementById('form-heading');
+    const submitBtn = document.getElementById('submit-btn');
+    const cancelBtn = document.getElementById('cancel-btn');
+    const notesList = document.getElementById('notes-list');
+
+    async function fetchNotes() {
+        const res = await fetch('/api/notes');
+        const notes = await res.json();
+        if (notes.length === 0) {
+            notesList.innerHTML = '<p style="color:#6b7280;">No notes yet. Create one above!</p>';
+            return;
+        }
+        notesList.innerHTML = notes.map(note => `
+            <div class="note-item">
+                <div class="note-header">
+                    <div>
+                        <h4 class="note-title">${escapeHtml(note.title)}</h4>
+                        <div class="note-meta">Updated: ${new Date(note.updated_at).toLocaleString()}</div>
+                    </div>
+                    <div class="actions">
+                        <button onclick="editNote(${note.id})">Edit</button>
+                        <button class="danger" onclick="deleteNote(${note.id})">Delete</button>
+                    </div>
+                </div>
+                <p class="note-content">${escapeHtml(note.content)}</p>
+            </div>
+        `).join('');
+    }
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const id = noteIdInput.value;
+        const payload = {
+            title: titleInput.value.trim(),
+            content: contentInput.value.trim()
+        };
+
+        if (id) {
+            await fetch(`/api/notes/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        } else {
+            await fetch('/api/notes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        }
+        resetForm();
+        fetchNotes();
+    });
+
+    async function editNote(id) {
+        const res = await fetch(`/api/notes/${id}`);
+        if (!res.ok) return;
+        const note = await res.json();
+        noteIdInput.value = note.id;
+        titleInput.value = note.title;
+        contentInput.value = note.content;
+        formHeading.textContent = 'Edit Note';
+        submitBtn.textContent = 'Update Note';
+        cancelBtn.classList.remove('hidden');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    async function deleteNote(id) {
+        if (!confirm('Delete this note?')) return;
+        await fetch(`/api/notes/${id}`, { method: 'DELETE' });
+        if (noteIdInput.value == id) resetForm();
+        fetchNotes();
+    }
+
+    function resetForm() {
+        noteIdInput.value = '';
+        form.reset();
+        formHeading.textContent = 'Create a New Note';
+        submitBtn.textContent = 'Save Note';
+        cancelBtn.classList.add('hidden');
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    fetchNotes();
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/")
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
+
+# ---------------------------------------------------------------------------
+# REST API Endpoints
+# ---------------------------------------------------------------------------
+@app.route("/api/notes", methods=["GET"])
+def get_notes():
+    """READ: Retrieve all notes ordered by most recently updated."""
+    db = get_db()
+    rows = db.execute("SELECT * FROM notes ORDER BY updated_at DESC").fetchall()
+    return jsonify([serialize_note(row) for row in rows]), 200
+
+
+@app.route("/api/notes/<int:note_id>", methods=["GET"])
+def get_note(note_id):
+    """READ: Retrieve a single note by ID."""
+    db = get_db()
+    row = db.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+    if row is None:
+        return jsonify({"error": "Note not found"}), 404
+    return jsonify(serialize_note(row)), 200
+
+
+@app.route("/api/notes", methods=["POST"])
+def create_note():
+    """CREATE: Add a new note."""
+    data = request.get_json(silent=True)
+    if not data or not data.get("title") or not data.get("content"):
+        return jsonify({"error": "Both 'title' and 'content' are required"}), 400
+
+    now = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    cursor = db.execute(
+        "INSERT INTO notes (title, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (data["title"].strip(), data["content"].strip(), now, now),
+    )
+    db.commit()
+
+    new_note = db.execute("SELECT * FROM notes WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return jsonify(serialize_note(new_note)), 201
+
+
+@app.route("/api/notes/<int:note_id>", methods=["PUT", "PATCH"])
+def update_note(note_id):
+    """UPDATE: Modify an existing note's title and/or content."""
+    db = get_db()
+    existing = db.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+    if existing is None:
+        return jsonify({"error": "Note not found"}), 404
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be valid JSON"}), 400
+
+    title = data.get("title", existing["title"]).strip()
+    content = data.get("content", existing["content"]).strip()
+
+    if not title or not content:
+        return jsonify({"error": "'title' and 'content' cannot be empty"}), 400
+
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "UPDATE notes SET title = ?, content = ?, updated_at = ? WHERE id = ?",
+        (title, content, now, note_id),
+    )
+    db.commit()
+
+    updated = db.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+    return jsonify(serialize_note(updated)), 200
+
+
+@app.route("/api/notes/<int:note_id>", methods=["DELETE"])
+def delete_note(note_id):
+    """DELETE: Remove a note by ID."""
+    db = get_db()
+    existing = db.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+    if existing is None:
+        return jsonify({"error": "Note not found"}), 404
+
+    db.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+    db.commit()
+    return jsonify({"message": f"Note {note_id} deleted"}), 200
+
+
+if __name__ == "__main__":
+    init_db()
+    app.run(debug=True, port=5000)

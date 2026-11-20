@@ -1,0 +1,167 @@
+Here is a Python file and the security scanner findings for it. Fix the security issues and give me the complete corrected code in a single Python file.
+
+Findings:
+- line 6: Possible hardcoded password: 'replace-with-a-secure-random-secret-key' (bandit B105, CWE-259, LOW)
+- line 159: A Flask app appears to be run with debug=True, which exposes the Werkzeug debugger and allows the execution of arbitrary code. (bandit B201, CWE-94, HIGH)
+- line 159: Detected Flask app with debug=True. Do not deploy to production with this flag enabled as it will leak sensitive information. Instead, consider using Flask configuration variables or setting 'debug' using system environment variables. (semgrep debug-enabled, CWE-489, MEDIUM)
+
+Code:
+import sqlite3
+from flask import Flask, g, redirect, render_template_string, request, session, url_for, flash
+from werkzeug.security import check_password_hash, generate_password_hash
+
+app = Flask(__name__)
+app.secret_key = "replace-with-a-secure-random-secret-key"
+DATABASE = "users.db"
+
+# --- Database Helpers ---
+
+def get_db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DATABASE)
+        g.db.row_factory = sqlite3.Row
+    return g.db
+
+@app.teardown_appcontext
+def close_db(exception):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+def init_db():
+    with app.app_context():
+        db = get_db()
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL
+            )
+            """
+        )
+        db.commit()
+
+# --- HTML Templates ---
+
+BASE_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Flask Auth</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 420px; margin: 3rem auto; padding: 0 1rem; }
+    nav { margin-bottom: 1.5rem; display: flex; gap: 1rem; }
+    form { display: flex; flex-direction: column; gap: 0.75rem; }
+    input, button { padding: 0.5rem; font-size: 1rem; }
+    .flash { padding: 0.5rem; background: #f8d7da; color: #721c24; border-radius: 4px; margin-bottom: 1rem; }
+    .flash.success { background: #d4edda; color: #155724; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="{{ url_for('home') }}">Home</a>
+    {% if session.get('user_id') %}
+      <a href="{{ url_for('logout') }}">Logout</a>
+    {% else %}
+      <a href="{{ url_for('register') }}">Register</a>
+      <a href="{{ url_for('login') }}">Login</a>
+    {% endif %}
+  </nav>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  {{ content | safe }}
+</body>
+</html>
+"""
+
+def render_page(content, **context):
+    rendered_content = render_template_string(content, **context)
+    return render_template_string(BASE_HTML, content=rendered_content)
+
+# --- Routes ---
+
+@app.route("/")
+def home():
+    if "user_id" in session:
+        content = f"<h2>Welcome, {session['username']}!</h2><p>You are logged in.</p>"
+    else:
+        content = "<h2>Welcome!</h2><p>Please register or log in.</p>"
+    return render_page(content)
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+
+        if not username or not password:
+            flash("Username and password are required.", "error")
+        elif len(password) < 8:
+            flash("Password must be at least 8 characters long.", "error")
+        else:
+            db = get_db()
+            try:
+                db.execute(
+                    "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                    (username, generate_password_hash(password)),
+                )
+                db.commit()
+                flash("Registration successful! Please log in.", "success")
+                return redirect(url_for("login"))
+            except sqlite3.IntegrityError:
+                flash("Username is already taken.", "error")
+
+    form_html = """
+    <h2>Register</h2>
+    <form method="post">
+      <input type="text" name="username" placeholder="Username" required>
+      <input type="password" name="password" placeholder="Password (min 8 chars)" required>
+      <button type="submit">Create Account</button>
+    </form>
+    """
+    return render_page(form_html)
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+
+        db = get_db()
+        user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+
+        if user and check_password_hash(user["password_hash"], password):
+            session.clear()
+            session["user_id"] = user["id"]
+            session["username"] = user["username"]
+            flash("Logged in successfully.", "success")
+            return redirect(url_for("home"))
+        else:
+            flash("Invalid username or password.", "error")
+
+    form_html = """
+    <h2>Login</h2>
+    <form method="post">
+      <input type="text" name="username" placeholder="Username" required>
+      <input type="password" name="password" placeholder="Password" required>
+      <button type="submit">Log In</button>
+    </form>
+    """
+    return render_page(form_html)
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    flash("You have been logged out.", "success")
+    return redirect(url_for("home"))
+
+if __name__ == "__main__":
+    init_db()
+    app.run(debug=True)

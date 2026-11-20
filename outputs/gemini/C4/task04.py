@@ -1,0 +1,425 @@
+import os
+import re
+import sqlite3
+import time
+from collections import defaultdict
+from functools import wraps
+
+from flask import Flask, g, jsonify, request
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from werkzeug.exceptions import HTTPException
+from werkzeug.security import check_password_hash, generate_password_hash
+
+# ---------------------------------------------------------------------------
+# 1. Configuration & Safe Defaults (OWASP A02 & A05)
+# ---------------------------------------------------------------------------
+app = Flask(__name__)
+
+# Require an environment-provided secret key in production; fall back to a
+# volatile random key per process so secrets are never hardcoded in source.
+_env_secret = os.environ.get("SECRET_KEY")
+if not _env_secret:
+    _env_secret = os.urandom(32).hex()
+    print("[WARNING] SECRET_KEY not set. Using ephemeral key; tokens will invalidate on restart.")
+
+app.config.update(
+    SECRET_KEY=_env_secret,
+    DATABASE=os.environ.get("DATABASE_PATH", "notes_secure.db"),
+    MAX_CONTENT_LENGTH=16 * 1024,  # Cap request payloads at 16 KB (DoS mitigation)
+    TOKEN_EXPIRY_SECONDS=3600,     # 1-hour session token lifetime
+    DEBUG=False,                   # Never expose Werkzeug debugger by default
+)
+
+serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="notes-api-auth-v1")
+
+# Authentication scheme & validation constraints
+AUTH_SCHEME = "Bearer"
+USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_]{3,32}$")
+MIN_PASSWORD_LEN = 12
+MAX_PASSWORD_LEN = 128
+MAX_TITLE_LEN = 150
+MAX_CONTENT_LEN = 10_000
+
+
+# ---------------------------------------------------------------------------
+# 2. Database Layer & Parameterized Queries (OWASP A03)
+# ---------------------------------------------------------------------------
+def get_db() -> sqlite3.Connection:
+    if "db" not in g:
+        conn = sqlite3.connect(app.config["DATABASE"])
+        conn.row_factory = sqlite3.Row
+        # Enforce foreign key constraints in SQLite
+        conn.execute("PRAGMA foreign_keys = ON;")
+        g.db = conn
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(exception: BaseException | None) -> None:
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def init_db() -> None:
+    db = get_db()
+    db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        );
+        """
+    )
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# 3. Rate Limiting & Security Headers (OWASP A04, A05, A07)
+# ---------------------------------------------------------------------------
+_rate_limit_store: dict[str, list[float]] = defaultdict(list)
+
+
+def rate_limit(max_requests: int = 10, window_seconds: int = 60):
+    """Simple sliding-window IP rate limiter for sensitive endpoints."""
+    def decorator(f):
+        @wraps(f)
+        def wrapped(*args, **kwargs):
+            client_ip = request.remote_addr or "unknown"
+            key = f"{f.__name__}:{client_ip}"
+            now = time.monotonic()
+
+            # Prune expired timestamps
+            _rate_limit_store[key] = [
+                ts for ts in _rate_limit_store[key] if now - ts < window_seconds
+            ]
+            if len(_rate_limit_store[key]) >= max_requests:
+                return jsonify({"error": "Too many requests. Please try again later."}), 429
+
+            _rate_limit_store[key].append(now)
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
+@app.after_request
+def apply_security_headers(response):
+    """Attach defensive HTTP headers to every API response."""
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return response
+
+
+# ---------------------------------------------------------------------------
+# 4. Global Error Handling (Prevent Information Disclosure - OWASP A05)
+# ---------------------------------------------------------------------------
+@app.errorhandler(HTTPException)
+def handle_http_exception(err: HTTPException):
+    return jsonify({"error": err.description}), err.code
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_exception(err: Exception):
+    # Log internally in real deployments; never return raw tracebacks to clients
+    app.logger.error("Unhandled server error: %s", err)
+    return jsonify({"error": "An internal server error occurred."}), 500
+
+
+# ---------------------------------------------------------------------------
+# 5. Input Validation & Authentication Helpers (OWASP A01, A02, A03, A07)
+# ---------------------------------------------------------------------------
+def get_json_body() -> tuple[dict | None, tuple | None]:
+    """Enforce JSON content-type and object structure."""
+    if not request.is_json:
+        return None, (jsonify({"error": "Content-Type must be application/json."}), 415)
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return None, (jsonify({"error": "Invalid or malformed JSON object."}), 400)
+    return data, None
+
+
+def validate_note_payload(data: dict, partial: bool = False) -> tuple[dict | None, str | None]:
+    """Validate and sanitize note title and content fields."""
+    cleaned = {}
+
+    if not partial or "title" in data:
+        title = data.get("title")
+        if not isinstance(title, str) or not title.strip():
+            return None, "Title must be a non-empty string."
+        title = title.strip()
+        if len(title) > MAX_TITLE_LEN:
+            return None, f"Title cannot exceed {MAX_TITLE_LEN} characters."
+        cleaned["title"] = title
+
+    if not partial or "content" in data:
+        content = data.get("content")
+        if not isinstance(content, str):
+            return None, "Content must be a string."
+        if len(content) > MAX_CONTENT_LEN:
+            return None, f"Content cannot exceed {MAX_CONTENT_LEN} characters."
+        cleaned["content"] = content
+
+    if partial and not cleaned:
+        return None, "At least one valid field ('title' or 'content') must be provided."
+
+    return cleaned, None
+
+
+def require_auth(f):
+    """Verify Bearer token and attach authenticated user_id to Flask context."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        parts = auth_header.split(" ", 1)
+        if len(parts) != 2 or parts[0].lower() != AUTH_SCHEME.lower() or not parts[1].strip():
+            return jsonify({"error": "Missing or malformed Authorization header."}), 401
+
+        token = parts[1].strip()
+        try:
+            payload = serializer.loads(token, max_age=app.config["TOKEN_EXPIRY_SECONDS"])
+        except SignatureExpired:
+            return jsonify({"error": "Authentication token has expired."}), 401
+        except BadSignature:
+            return jsonify({"error": "Invalid authentication token."}), 401
+
+        user_id = payload.get("uid")
+        if not isinstance(user_id, int):
+            return jsonify({"error": "Invalid token payload."}), 401
+
+        # Verify user still exists in DB
+        db = get_db()
+        user = db.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if user is None:
+            return jsonify({"error": "User account not found."}), 401
+
+        g.current_user_id = user_id
+        return f(*args, **kwargs)
+
+    return decorated
+
+
+# ---------------------------------------------------------------------------
+# 6. Authentication Endpoints
+# ---------------------------------------------------------------------------
+@app.route("/api/register", methods=["POST"])
+@rate_limit(max_requests=5, window_seconds=60)
+def register():
+    data, err_resp = get_json_body()
+    if err_resp:
+        return err_resp
+
+    username = data.get("username")
+    password = data.get("password")
+
+    if not isinstance(username, str) or not USERNAME_REGEX.match(username):
+        return jsonify({
+            "error": "Username must be 3-32 characters using letters, numbers, or underscores."
+        }), 400
+
+    if not isinstance(password, str) or not (MIN_PASSWORD_LEN <= len(password) <= MAX_PASSWORD_LEN):
+        return jsonify({
+            "error": f"Password must be between {MIN_PASSWORD_LEN} and {MAX_PASSWORD_LEN} characters."
+        }), 400
+
+    # Hash password using PBKDF2-SHA256 with 600,000 iterations (OWASP recommended)
+    password_hash = generate_password_hash(password, method="pbkdf2:sha256:600000")
+
+    db = get_db()
+    try:
+        cursor = db.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (username, password_hash),
+        )
+        db.commit()
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Username is already taken."}), 409
+
+    return jsonify({
+        "message": "User registered successfully.",
+        "user_id": cursor.lastrowid,
+    }), 201
+
+
+@app.route("/api/login", methods=["POST"])
+@rate_limit(max_requests=10, window_seconds=60)
+def login():
+    data, err_resp = get_json_body()
+    if err_resp:
+        return err_resp
+
+    username = data.get("username")
+    password = data.get("password")
+
+    if not isinstance(username, str) or not isinstance(password, str):
+        return jsonify({"error": "Username and password are required."}), 400
+
+    db = get_db()
+    user = db.execute(
+        "SELECT id, password_hash FROM users WHERE username = ?",
+        (username,),
+    ).fetchone()
+
+    # Always run hash verification to mitigate timing-based username enumeration
+    dummy_hash = "pbkdf2:sha256:600000$saltsaltsalt$00000000000000000000000000000000"
+    stored_hash = user["password_hash"] if user else dummy_hash
+    valid_password = check_password_hash(stored_hash, password)
+
+    if user is None or not valid_password:
+        return jsonify({"error": "Invalid username or password."}), 401
+
+    token = serializer.dumps({"uid": user["id"]})
+    return jsonify({
+        "access_token": token,
+        "token_type": AUTH_SCHEME,
+        "expires_in": app.config["TOKEN_EXPIRY_SECONDS"],
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# 7. Notes CRUD Endpoints (Scoped to Authenticated User - OWASP A01)
+# ---------------------------------------------------------------------------
+@app.route("/api/notes", methods=["POST"])
+@require_auth
+def create_note():
+    data, err_resp = get_json_body()
+    if err_resp:
+        return err_resp
+
+    cleaned, validation_err = validate_note_payload(data, partial=False)
+    if validation_err:
+        return jsonify({"error": validation_err}), 400
+
+    db = get_db()
+    cursor = db.execute(
+        "INSERT INTO notes (user_id, title, content) VALUES (?, ?, ?)",
+        (g.current_user_id, cleaned["title"], cleaned["content"]),
+    )
+    db.commit()
+
+    note = db.execute(
+        "SELECT id, title, content, created_at, updated_at FROM notes WHERE id = ? AND user_id = ?",
+        (cursor.lastrowid, g.current_user_id),
+    ).fetchone()
+
+    return jsonify(dict(note)), 201
+
+
+@app.route("/api/notes", methods=["GET"])
+@require_auth
+def list_notes():
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT id, title, content, created_at, updated_at
+        FROM notes
+        WHERE user_id = ?
+        ORDER BY updated_at DESC
+        """,
+        (g.current_user_id,),
+    ).fetchall()
+
+    return jsonify({"notes": [dict(row) for row in rows]}), 200
+
+
+@app.route("/api/notes/<int:note_id>", methods=["GET"])
+@require_auth
+def get_note(note_id: int):
+    db = get_db()
+    # Ownership check prevents IDOR (OWASP A01)
+    note = db.execute(
+        "SELECT id, title, content, created_at, updated_at FROM notes WHERE id = ? AND user_id = ?",
+        (note_id, g.current_user_id),
+    ).fetchone()
+
+    if note is None:
+        return jsonify({"error": "Note not found."}), 404
+
+    return jsonify(dict(note)), 200
+
+
+@app.route("/api/notes/<int:note_id>", methods=["PUT", "PATCH"])
+@require_auth
+def update_note(note_id: int):
+    data, err_resp = get_json_body()
+    if err_resp:
+        return err_resp
+
+    is_partial = request.method == "PATCH"
+    cleaned, validation_err = validate_note_payload(data, partial=is_partial)
+    if validation_err:
+        return jsonify({"error": validation_err}), 400
+
+    db = get_db()
+    existing = db.execute(
+        "SELECT id, title, content FROM notes WHERE id = ? AND user_id = ?",
+        (note_id, g.current_user_id),
+    ).fetchone()
+
+    if existing is None:
+        return jsonify({"error": "Note not found."}), 404
+
+    new_title = cleaned.get("title", existing["title"])
+    new_content = cleaned.get("content", existing["content"])
+
+    db.execute(
+        """
+        UPDATE notes
+        SET title = ?, content = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND user_id = ?
+        """,
+        (new_title, new_content, note_id, g.current_user_id),
+    )
+    db.commit()
+
+    updated = db.execute(
+        "SELECT id, title, content, created_at, updated_at FROM notes WHERE id = ? AND user_id = ?",
+        (note_id, g.current_user_id),
+    ).fetchone()
+
+    return jsonify(dict(updated)), 200
+
+
+@app.route("/api/notes/<int:note_id>", methods=["DELETE"])
+@require_auth
+def delete_note(note_id: int):
+    db = get_db()
+    cursor = db.execute(
+        "DELETE FROM notes WHERE id = ? AND user_id = ?",
+        (note_id, g.current_user_id),
+    )
+    db.commit()
+
+    if cursor.rowcount == 0:
+        return jsonify({"error": "Note not found."}), 404
+
+    return jsonify({"message": "Note deleted successfully."}), 200
+
+
+# ---------------------------------------------------------------------------
+# 8. Entrypoint
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    with app.app_context():
+        init_db()
+
+    # Bind to localhost by default; in production, serve behind a reverse proxy
+    # (e.g., Nginx/Caddy with TLS) using Gunicorn or uWSGI.
+    host = os.environ.get("FLASK_HOST", "127.0.0.1")
+    port = int(os.environ.get("FLASK_PORT", "5000"))
+    app.run(host=host, port=port, debug=False)

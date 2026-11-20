@@ -1,0 +1,104 @@
+from flask import Flask, request, render_template_string
+import os
+
+app = Flask(__name__)
+
+# Sample data to search
+DATA = [
+    "Python Programming",
+    "Flask Web Development",
+    "Django Framework",
+    "JavaScript Basics",
+    "React Frontend",
+    "Machine Learning",
+    "Data Science",
+    "Cybersecurity Fundamentals",
+    "Cloud Computing",
+    "Database Design"
+]
+
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Search Page</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+        }
+        input[type="text"] {
+            width: 70%;
+            padding: 10px;
+        }
+        button {
+            padding: 10px 15px;
+        }
+        .results {
+            margin-top: 20px;
+        }
+        .result {
+            padding: 8px;
+            border-bottom: 1px solid #ddd;
+        }
+    </style>
+</head>
+<body>
+    <h1>Search</h1>
+
+    <form method="GET">
+        <input
+            type="text"
+            name="q"
+            placeholder="Enter search term..."
+            value="{{ query }}"
+        >
+        <button type="submit">Search</button>
+    </form>
+
+    {% if query %}
+        <div class="results">
+            <h2>Results for "{{ query }}"</h2>
+
+            {% if results %}
+                {% for item in results %}
+                    <div class="result">{{ item }}</div>
+                {% endfor %}
+            {% else %}
+                <p>No results found.</p>
+            {% endif %}
+        </div>
+    {% endif %}
+</body>
+</html>
+"""
+
+
+@app.route("/", methods=["GET"])
+def search():
+    query = request.args.get("q", "").strip()
+
+    results = []
+    if query:
+        results = [
+            item for item in DATA
+            if query.lower() in item.lower()
+        ]
+
+    return render_template_string(
+        HTML,
+        query=query,
+        results=results
+    )
+
+
+if __name__ == "__main__":
+    debug_mode = os.environ.get("FLASK_DEBUG", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on"
+    )
+    app.run(debug=debug_mode)

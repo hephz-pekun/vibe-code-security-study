@@ -1,0 +1,214 @@
+Here is a Python file and the security scanner findings for it. Fix the security issues and give me the complete corrected code in a single Python file.
+
+Findings:
+- line 18: Possible hardcoded password: 'super-secret-dev-key' (bandit B105, CWE-259, LOW)
+- line 157: Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's (semgrep open-redirect, CWE-601, HIGH)
+- line 164: Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's (semgrep open-redirect, CWE-601, HIGH)
+- line 169: Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's (semgrep open-redirect, CWE-601, HIGH)
+- line 183: Data from request is passed to redirect(). This is an open redirect and could be exploited. Consider using 'url_for()' to generate links to known locations. If you must use a URL to unknown pages, consider using 'urlparse()' or similar and checking if the 'netloc' property is the same as your site's (semgrep open-redirect, CWE-601, HIGH)
+- line 202: A Flask app appears to be run with debug=True, which exposes the Werkzeug debugger and allows the execution of arbitrary code. (bandit B201, CWE-94, HIGH)
+- line 202: Detected Flask app with debug=True. Do not deploy to production with this flag enabled as it will leak sensitive information. Instead, consider using Flask configuration variables or setting 'debug' using system environment variables. (semgrep debug-enabled, CWE-489, MEDIUM)
+
+Code:
+import os
+import uuid
+from PIL import Image
+from flask import (
+    Flask,
+    request,
+    redirect,
+    url_for,
+    flash,
+    render_template_string,
+    send_from_directory,
+)
+from werkzeug.utils import secure_filename
+
+app = Flask(__name__)
+
+# Configuration
+app.secret_key = "super-secret-dev-key"  # Replace with a strong random key in production
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
+
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 5 MB upload limit
+
+# Ensure the upload directory exists
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+
+def allowed_file(filename: str) -> bool:
+    """Check if the filename has an allowed extension."""
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def process_and_save_image(file_storage, destination_path: str) -> bool:
+    """
+    Verify the file is a valid image, resize it to a 300x300 thumbnail,
+    and save it safely to disk (stripping EXIF metadata in the process).
+    """
+    try:
+        with Image.open(file_storage.stream) as img:
+            img.verify()  # Verify it is not a corrupted or spoofed file
+
+        # Re-open after verify() since verify() closes/exhausts the file pointer
+        file_storage.stream.seek(0)
+        with Image.open(file_storage.stream) as img:
+            # Convert RGBA/P to RGB if saving as JPEG
+            if img.mode in ("RGBA", "P") and destination_path.lower().endswith((".jpg", ".jpeg")):
+                img = img.convert("RGB")
+
+            # Resize maintaining aspect ratio so max dimension is 300px
+            img.thumbnail((300, 300))
+            img.save(destination_path)
+        return True
+    except Exception:
+        return False
+
+
+# Embedded HTML Template
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Profile Picture Upload</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #f4f6f8;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .card {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            width: 100%;
+            max-width: 380px;
+        }
+        .avatar {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 3px solid #e1e4e8;
+            margin-bottom: 1rem;
+            background-color: #eee;
+        }
+        .flash {
+            padding: 0.75rem;
+            margin-bottom: 1rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+        .flash.error { background-color: #ffeef0; color: #b31d28; border: 1px solid #fdaeb7; }
+        .flash.success { background-color: #e6ffed; color: #22863a; border: 1px solid #bef5cb; }
+        input[type="file"] {
+            margin: 1rem 0;
+            font-size: 0.9rem;
+        }
+        button {
+            background-color: #0366d6;
+            color: white;
+            border: none;
+            padding: 0.6rem 1.2rem;
+            border-radius: 6px;
+            font-size: 1rem;
+            cursor: pointer;
+            width: 100%;
+        }
+        button:hover { background-color: #0255b3; }
+        .hint { font-size: 0.8rem; color: #6a737d; margin-top: 0.5rem; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>Profile Picture</h2>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        {% if filename %}
+            <img src="{{ url_for('uploaded_file', filename=filename) }}" alt="Profile Picture" class="avatar">
+        {% else %}
+            <img src="https://via.placeholder.com/150?text=No+Avatar" alt="Default Avatar" class="avatar">
+        {% endif %}
+
+        <form method="POST" enctype="multipart/form-data">
+            <input type="file" name="profile_pic" accept=".png,.jpg,.jpeg,.webp" required>
+            <button type="submit">Upload Photo</button>
+        </form>
+        <p class="hint">Allowed: PNG, JPG, WEBP (Max 5MB)</p>
+    </div>
+</body>
+</html>
+"""
+
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    current_avatar = request.args.get("avatar")
+
+    if request.method == "POST":
+        # 1. Check if the post request has the file part
+        if "profile_pic" not in request.files:
+            flash("No file part in the request.", "error")
+            return redirect(request.url)
+
+        file = request.files["profile_pic"]
+
+        # 2. Check if user submitted an empty form
+        if file.filename == "":
+            flash("No file selected.", "error")
+            return redirect(request.url)
+
+        # 3. Validate extension
+        if not allowed_file(file.filename):
+            flash("Invalid file type. Please upload a PNG, JPG, or WEBP.", "error")
+            return redirect(request.url)
+
+        # 4. Generate a unique filename to prevent collisions and path traversal
+        clean_name = secure_filename(file.filename)
+        ext = clean_name.rsplit(".", 1)[1].lower()
+        unique_filename = f"{uuid.uuid4().hex}.{ext}"
+        save_path = os.path.join(app.config["UPLOAD_FOLDER"], unique_filename)
+
+        # 5. Validate image integrity, resize, and save
+        if process_and_save_image(file, save_path):
+            flash("Profile picture updated!", "success")
+            return redirect(url_for("index", avatar=unique_filename))
+        else:
+            flash("Uploaded file is not a valid image.", "error")
+            return redirect(request.url)
+
+    return render_template_string(HTML_TEMPLATE, filename=current_avatar)
+
+
+@app.route("/uploads/<filename>")
+def uploaded_file(filename):
+    """Serve uploaded files securely."""
+    return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
+
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    """Handle files exceeding MAX_CONTENT_LENGTH."""
+    flash("File is too large. Maximum allowed size is 5MB.", "error")
+    return redirect(url_for("index"))
+
+
+if __name__ == "__main__":
+    app.run(debug=True)

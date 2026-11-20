@@ -1,0 +1,183 @@
+"""Profile picture upload for Flask.
+
+Run:
+    pip install -r requirements.txt
+    flask --app app run --debug
+
+The demo has one hard-coded user (id=1). In a real app, replace
+`current_user_id()` with your auth system (e.g. Flask-Login's current_user.id).
+"""
+import hmac
+import os
+import secrets
+import sqlite3
+from pathlib import Path
+
+from flask import (Flask, flash, g, redirect, render_template, request,
+                   session, url_for)
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = BASE_DIR / "static" / "uploads" / "avatars"
+DB_PATH = BASE_DIR / "app.db"
+
+ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP"}  # checked against the real file content
+AVATAR_SIZE = (400, 400)                   # stored square, center-cropped
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024         # 5 MB
+
+# Reject huge-dimension images that could exhaust memory when decoded.
+Image.MAX_IMAGE_PIXELS = 25_000_000
+
+app = Flask(__name__)
+app.config.update(
+    SECRET_KEY=os.environ.get("SECRET_KEY", "dev-only-change-me"),
+    MAX_CONTENT_LENGTH=MAX_UPLOAD_BYTES,
+)
+
+
+# ---------------------------------------------------------------- database
+def get_db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DB_PATH)
+        g.db.row_factory = sqlite3.Row
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(_exc):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def init_db():
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(DB_PATH) as db:
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS users (
+                   id INTEGER PRIMARY KEY,
+                   username TEXT NOT NULL,
+                   avatar TEXT
+               )"""
+        )
+        db.execute("INSERT OR IGNORE INTO users (id, username) VALUES (1, 'Jordan Lee')")
+
+
+def current_user_id():
+    return 1  # replace with real authentication
+
+
+def get_user():
+    return get_db().execute(
+        "SELECT * FROM users WHERE id = ?", (current_user_id(),)
+    ).fetchone()
+
+
+# -------------------------------------------------------------------- CSRF
+def csrf_token():
+    if "csrf" not in session:
+        session["csrf"] = secrets.token_urlsafe(32)
+    return session["csrf"]
+
+
+app.jinja_env.globals["csrf_token"] = csrf_token
+
+
+@app.before_request
+def check_csrf():
+    if request.method == "POST":
+        sent = request.form.get("csrf", "")
+        if not hmac.compare_digest(sent, session.get("csrf", "")):
+            flash("Your session expired. Please try again.", "error")
+            return redirect(url_for("profile"))
+
+
+# ------------------------------------------------------------ image handling
+class InvalidImage(Exception):
+    pass
+
+
+def save_avatar(file_storage):
+    """Validate, normalize and save an uploaded image. Returns the filename."""
+    try:
+        # verify() checks the file is a real image, but invalidates the object,
+        # so open it a second time to actually process it.
+        with Image.open(file_storage.stream) as probe:
+            if probe.format not in ALLOWED_FORMATS:
+                raise InvalidImage("Use a JPG, PNG or WebP image.")
+            probe.verify()
+        file_storage.stream.seek(0)
+
+        with Image.open(file_storage.stream) as img:
+            img = ImageOps.exif_transpose(img)  # respect phone-camera rotation
+            img = ImageOps.fit(img, AVATAR_SIZE, Image.LANCZOS)  # square crop
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA" if "transparency" in img.info else "RGB")
+
+            # Random server-generated name: never trust the client's filename.
+            filename = f"{secrets.token_hex(16)}.webp"
+            # Re-encoding strips EXIF/GPS data and any payload hidden in the file.
+            img.save(UPLOAD_DIR / filename, "WEBP", quality=85)
+    except (UnidentifiedImageError, Image.DecompressionBombError, SyntaxError):
+        raise InvalidImage("That file isn't a valid image.")
+    return filename
+
+
+def delete_avatar_file(filename):
+    if filename:
+        (UPLOAD_DIR / Path(filename).name).unlink(missing_ok=True)
+
+
+# ------------------------------------------------------------------- routes
+@app.get("/")
+def profile():
+    return render_template("profile.html", user=get_user())
+
+
+@app.post("/profile/avatar")
+def upload_avatar():
+    file = request.files.get("avatar")
+    if file is None or file.filename == "":
+        flash("Choose an image to upload.", "error")
+        return redirect(url_for("profile"))
+
+    try:
+        new_name = save_avatar(file)
+    except InvalidImage as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("profile"))
+
+    user = get_user()
+    db = get_db()
+    db.execute("UPDATE users SET avatar = ? WHERE id = ?", (new_name, user["id"]))
+    db.commit()
+    delete_avatar_file(user["avatar"])  # don't leave orphaned files behind
+
+    flash("Profile picture updated.", "success")
+    return redirect(url_for("profile"))
+
+
+@app.post("/profile/avatar/remove")
+def remove_avatar():
+    user = get_user()
+    db = get_db()
+    db.execute("UPDATE users SET avatar = NULL WHERE id = ?", (user["id"],))
+    db.commit()
+    delete_avatar_file(user["avatar"])
+    flash("Profile picture removed.", "success")
+    return redirect(url_for("profile"))
+
+
+@app.errorhandler(413)
+def too_large(_exc):
+    flash(f"That file is too large. The limit is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.", "error")
+    return redirect(url_for("profile"))
+
+
+init_db()
+
+if __name__ == "__main__":
+    # Debug mode (and the Werkzeug debugger) is off unless explicitly enabled
+    # via the environment, e.g. `FLASK_DEBUG=1 python app.py` on a dev machine.
+    # Never set it in production; use a real WSGI server such as gunicorn there.
+    app.run(debug=os.environ.get("FLASK_DEBUG", "0") == "1")

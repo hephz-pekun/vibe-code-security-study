@@ -1,0 +1,324 @@
+"""
+Flask login app with a SQLite user table (single file).
+
+Setup:
+    pip install flask
+    python app.py
+Then open http://127.0.0.1:5000
+
+Features: register, login, logout, protected dashboard,
+hashed passwords, CSRF protection, session cookie hardening.
+"""
+
+import os
+import secrets
+import sqlite3
+from functools import wraps
+from urllib.parse import urlparse
+
+from flask import (
+    Flask, g, redirect, render_template_string, request, session, url_for, flash, abort
+)
+from werkzeug.exceptions import HTTPException
+from werkzeug.security import check_password_hash, generate_password_hash
+
+DATABASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
+
+app = Flask(__name__)
+# Set SECRET_KEY in the environment for production so sessions survive restarts.
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    # SESSION_COOKIE_SECURE=True,  # enable when serving over HTTPS
+)
+
+
+# ---------- Database ----------
+
+def get_db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DATABASE)
+        g.db.row_factory = sqlite3.Row
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(_exc):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def init_db():
+    with sqlite3.connect(DATABASE) as db:
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_hash TEXT NOT NULL,
+                created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+
+# ---------- Helpers ----------
+
+def csrf_token():
+    if "_csrf" not in session:
+        session["_csrf"] = secrets.token_hex(16)
+    return session["_csrf"]
+
+
+app.jinja_env.globals["csrf_token"] = csrf_token
+
+
+@app.before_request
+def csrf_protect():
+    if request.method == "POST":
+        sent = request.form.get("_csrf", "")
+        if not sent or not secrets.compare_digest(sent, session.get("_csrf", "")):
+            abort(400, "Invalid CSRF token")
+
+
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if "user_id" not in session:
+            return redirect(url_for("login", next=request.path))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def safe_next(target):
+    """
+    Resolve a user-supplied 'next' value to a known location in this app.
+
+    The value is never used as a redirect target directly. It is parsed,
+    rejected if it carries a scheme, host, backslash or control characters,
+    matched against the app's own URL map, and the redirect URL is then
+    rebuilt with url_for() from the matched endpoint.
+    """
+    default = url_for("dashboard")
+    if not target or not isinstance(target, str):
+        return default
+
+    # Backslashes and control characters are treated as slashes / separators
+    # by some browsers, which can turn "/\\evil.com" into a cross-site URL.
+    if "\\" in target or any(ord(c) < 32 or ord(c) == 127 for c in target):
+        return default
+
+    parts = urlparse(target)
+    if parts.scheme or parts.netloc:
+        return default
+    if not parts.path.startswith("/") or parts.path.startswith("//"):
+        return default
+
+    try:
+        endpoint, values = app.url_map.bind("").match(parts.path, method="GET")
+    except HTTPException:  # no such route, redirect-needed, wrong method, etc.
+        return default
+
+    if endpoint == "static" or endpoint == "logout":
+        return default
+
+    try:
+        return url_for(endpoint, **values)
+    except Exception:  # pragma: no cover - defensive fallback
+        return default
+
+
+# ---------- Templates ----------
+
+BASE = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <style>
+    :root { --bg:#f4f5f7; --card:#fff; --text:#1c1e21; --muted:#6b7280;
+            --accent:#2563eb; --border:#d1d5db; --err:#b91c1c; --ok:#15803d; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111418; --card:#1b1f26; --text:#e8eaed; --muted:#9aa0a6;
+              --accent:#60a5fa; --border:#374151; --err:#f87171; --ok:#4ade80; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center;
+           background:var(--bg); color:var(--text);
+           font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .card { width:min(380px, 92vw); background:var(--card); padding:2rem;
+            border-radius:12px; border:1px solid var(--border);
+            box-shadow:0 4px 16px rgba(0,0,0,.08); }
+    h1 { margin:0 0 1.25rem; font-size:1.5rem; }
+    label { display:block; font-size:.85rem; margin:.9rem 0 .3rem; color:var(--muted); }
+    input { width:100%; padding:.65rem .75rem; font-size:1rem; border-radius:8px;
+            border:1px solid var(--border); background:var(--bg); color:var(--text); }
+    input:focus { outline:2px solid var(--accent); border-color:transparent; }
+    button { width:100%; margin-top:1.25rem; padding:.7rem; font-size:1rem; font-weight:600;
+             border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
+    button:hover { filter:brightness(1.1); }
+    .msg { padding:.6rem .75rem; border-radius:8px; margin-bottom:.75rem; font-size:.9rem;
+           border:1px solid var(--border); }
+    .msg.error { color:var(--err); } .msg.success { color:var(--ok); }
+    .alt { margin-top:1.1rem; text-align:center; font-size:.9rem; color:var(--muted); }
+    a { color:var(--accent); }
+  </style>
+</head>
+<body>
+  <main class="card">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="msg {{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+    {{ body|safe }}
+  </main>
+</body>
+</html>
+"""
+
+LOGIN_BODY = """
+<h1>Sign in</h1>
+<form method="post" autocomplete="on">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <label for="username">Username</label>
+  <input id="username" name="username" required autofocus autocomplete="username"
+         value="{{ username or '' }}">
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" required autocomplete="current-password">
+  <button type="submit">Sign in</button>
+</form>
+<p class="alt">No account? <a href="{{ url_for('register') }}">Create one</a></p>
+"""
+
+REGISTER_BODY = """
+<h1>Create account</h1>
+<form method="post">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <label for="username">Username (3-32 letters, numbers, _ or -)</label>
+  <input id="username" name="username" required minlength="3" maxlength="32"
+         pattern="[A-Za-z0-9_\\-]+" autocomplete="username" value="{{ username or '' }}">
+  <label for="password">Password (min 8 characters)</label>
+  <input id="password" name="password" type="password" required minlength="8"
+         autocomplete="new-password">
+  <label for="confirm">Confirm password</label>
+  <input id="confirm" name="confirm" type="password" required minlength="8"
+         autocomplete="new-password">
+  <button type="submit">Register</button>
+</form>
+<p class="alt">Already registered? <a href="{{ url_for('login') }}">Sign in</a></p>
+"""
+
+DASHBOARD_BODY = """
+<h1>Welcome, {{ user['username'] }}</h1>
+<p>You're signed in. Member since {{ user['created_at'] }} (UTC).</p>
+<form method="post" action="{{ url_for('logout') }}">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <button type="submit">Log out</button>
+</form>
+"""
+
+
+def page(title, body, **ctx):
+    inner = render_template_string(body, **ctx)
+    return render_template_string(BASE, title=title, body=inner)
+
+
+# ---------- Routes ----------
+
+@app.route("/")
+def index():
+    return redirect(url_for("dashboard" if "user_id" in session else "login"))
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    username = ""
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm", "")
+
+        error = None
+        if not (3 <= len(username) <= 32) or not all(c.isalnum() or c in "_-" for c in username):
+            error = "Username must be 3-32 characters: letters, numbers, _ or -."
+        elif len(password) < 8:
+            error = "Password must be at least 8 characters."
+        elif password != confirm:
+            error = "Passwords do not match."
+
+        if error is None:
+            try:
+                db = get_db()
+                db.execute(
+                    "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                    (username, generate_password_hash(password)),
+                )
+                db.commit()
+            except sqlite3.IntegrityError:
+                error = "That username is already taken."
+
+        if error:
+            flash(error, "error")
+        else:
+            flash("Account created. Please sign in.", "success")
+            return redirect(url_for("login"))
+
+    return page("Register", REGISTER_BODY, username=username)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if "user_id" in session:
+        return redirect(url_for("dashboard"))
+
+    username = ""
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+
+        user = get_db().execute(
+            "SELECT * FROM users WHERE username = ?", (username,)
+        ).fetchone()
+
+        if user and check_password_hash(user["password_hash"], password):
+            session.clear()  # prevent session fixation
+            session["user_id"] = user["id"]
+            csrf_token()  # issue a fresh CSRF token
+            # Resolved against the app's own routes and rebuilt via url_for().
+            return redirect(safe_next(request.args.get("next")))
+
+        flash("Invalid username or password.", "error")
+
+    return page("Sign in", LOGIN_BODY, username=username)
+
+
+@app.route("/dashboard")
+@login_required
+def dashboard():
+    user = get_db().execute(
+        "SELECT id, username, created_at FROM users WHERE id = ?", (session["user_id"],)
+    ).fetchone()
+    if user is None:  # account was deleted
+        session.clear()
+        return redirect(url_for("login"))
+    return page("Dashboard", DASHBOARD_BODY, user=user)
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    flash("You have been logged out.", "success")
+    return redirect(url_for("login"))
+
+
+if __name__ == "__main__":
+    init_db()
+    # The Werkzeug debugger is never enabled here. For local development with
+    # auto-reload, run `flask --app app run --debug` from your own shell
+    # instead, and use a production WSGI server (e.g. gunicorn) when deploying.
+    app.run(host="127.0.0.1", port=5000)

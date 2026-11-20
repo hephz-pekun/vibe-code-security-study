@@ -1,0 +1,548 @@
+Here is a Python file and the security scanner findings for it. Fix the security issues and give me the complete corrected code in a single Python file.
+
+Findings:
+- line 415: Possible hardcoded password: 'Bearer' (bandit B105, CWE-259, LOW)
+- line 435: Avoiding SQL string concatenation: untrusted input concatenated with raw SQL query can result in SQL Injection. In order to execute raw query safely, prepared statement should be used. SQLAlchemy provides TextualSQL to easily used prepared statement with named parameters. For complex SQL composition (semgrep sqlalchemy-execute-raw-query, CWE-89, HIGH)
+- line 436: Possible SQL injection vector through string-based query construction. (bandit B608, CWE-89, MEDIUM)
+- line 467: Possible SQL injection vector through string-based query construction. (bandit B608, CWE-89, MEDIUM)
+- line 496: Avoiding SQL string concatenation: untrusted input concatenated with raw SQL query can result in SQL Injection. In order to execute raw query safely, prepared statement should be used. SQLAlchemy provides TextualSQL to easily used prepared statement with named parameters. For complex SQL composition (semgrep sqlalchemy-execute-raw-query, CWE-89, HIGH)
+- line 497: Possible SQL injection vector through string-based query construction. (bandit B608, CWE-89, MEDIUM)
+
+Code:
+#!/usr/bin/env python3
+"""
+Secure Notes REST API (Flask + SQLite)
+
+Run (development):
+    pip install "flask>=3.0"
+    python notes_app.py
+
+Run (production-style, behind a TLS-terminating reverse proxy):
+    pip install gunicorn
+    gunicorn -w 2 -b 127.0.0.1:8000 notes_app:app
+
+Environment variables (all optional, no secrets are hardcoded):
+    NOTES_DB_PATH            SQLite file path          (default: notes.db)
+    NOTES_TOKEN_TTL_SECONDS  Session token lifetime    (default: 3600)
+    NOTES_HOST / NOTES_PORT  Dev server bind address   (default: 127.0.0.1:5000)
+
+Endpoints:
+    POST   /api/register        {"username": "...", "password": "..."}
+    POST   /api/login           {"username": "...", "password": "..."} -> {"token": "..."}
+    POST   /api/logout          (Bearer token)
+    POST   /api/notes           {"title": "...", "content": "..."}
+    GET    /api/notes?limit=20&offset=0
+    GET    /api/notes/<id>
+    PUT    /api/notes/<id>      full update  (title + content required)
+    PATCH  /api/notes/<id>      partial update
+    DELETE /api/notes/<id>
+
+OWASP Top 10 mapping (where it is handled in this file):
+    A01 Broken Access Control   -> every note query is scoped by user_id (no IDOR)
+    A02 Cryptographic Failures  -> scrypt password hashes; session tokens stored only as SHA-256
+    A03 Injection               -> parameterized SQL only; strict input validation
+    A04 Insecure Design         -> rate limiting, size limits, unknown fields rejected
+    A05 Security Misconfig      -> debug off, loopback bind, security headers, generic errors
+    A07 Auth Failures           -> strong password policy, uniform login errors, timing equalization,
+                                   token expiry, brute-force throttling
+    A09 Logging Failures        -> security events logged, secrets never logged
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import re
+import secrets
+import sqlite3
+import threading
+import time
+from collections import defaultdict, deque
+from datetime import datetime, timezone
+from functools import wraps
+
+from flask import Flask, g, jsonify, request
+from werkzeug.exceptions import HTTPException
+from werkzeug.security import check_password_hash, generate_password_hash
+
+# --------------------------------------------------------------------------- #
+# Configuration (environment-driven, safe defaults)
+# --------------------------------------------------------------------------- #
+
+DB_PATH = os.environ.get("NOTES_DB_PATH", "notes.db")
+TOKEN_TTL_SECONDS = int(os.environ.get("NOTES_TOKEN_TTL_SECONDS", "3600"))
+HOST = os.environ.get("NOTES_HOST", "127.0.0.1")  # loopback by default, not 0.0.0.0
+PORT = int(os.environ.get("NOTES_PORT", "5000"))
+
+MAX_REQUEST_BYTES = 64 * 1024
+USERNAME_RE = re.compile(r"^[a-z0-9_.-]{3,32}$")
+PASSWORD_MIN, PASSWORD_MAX = 12, 128
+TITLE_MAX, CONTENT_MAX = 200, 10_000
+NOTE_FIELDS = ("title", "content")
+DIGITS_RE = re.compile(r"^[0-9]{1,9}$")
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
+log = logging.getLogger("notes")
+
+app = Flask(__name__)
+app.config.update(
+    MAX_CONTENT_LENGTH=MAX_REQUEST_BYTES,  # reject oversized bodies (413)
+    JSON_SORT_KEYS=False,
+    PROPAGATE_EXCEPTIONS=False,
+)
+
+# --------------------------------------------------------------------------- #
+# Errors
+# --------------------------------------------------------------------------- #
+
+
+class ApiError(Exception):
+    def __init__(self, status: int, message: str, details: dict | None = None):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.details = details
+
+
+def error_response(status: int, message: str, details: dict | None = None):
+    body = {"error": {"status": status, "message": message}}
+    if details:
+        body["error"]["details"] = details
+    return jsonify(body), status
+
+
+@app.errorhandler(ApiError)
+def handle_api_error(e: ApiError):
+    return error_response(e.status, e.message, e.details)
+
+
+@app.errorhandler(HTTPException)
+def handle_http_error(e: HTTPException):
+    return error_response(e.code or 500, e.name)
+
+
+@app.errorhandler(Exception)
+def handle_unexpected(e: Exception):
+    # Log full detail server-side; never leak stack traces or internals to clients.
+    log.exception("Unhandled error")
+    return error_response(500, "Internal server error")
+
+
+# --------------------------------------------------------------------------- #
+# Database (parameterized queries only)
+# --------------------------------------------------------------------------- #
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tokens (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title      TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id, id);
+CREATE INDEX IF NOT EXISTS idx_tokens_expiry ON tokens(expires_at);
+"""
+
+
+def init_db() -> None:
+    # Create the DB file with owner-only permissions (0600) before SQLite touches it.
+    if not os.path.exists(DB_PATH):
+        os.close(os.open(DB_PATH, os.O_CREAT | os.O_WRONLY, 0o600))
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.executescript(SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_db() -> sqlite3.Connection:
+    if "db" not in g:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        g.db = conn
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(_exc):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# --------------------------------------------------------------------------- #
+# Security helpers
+# --------------------------------------------------------------------------- #
+
+
+class RateLimiter:
+    """Sliding-window limiter (in-memory, per-process).
+
+    Fine for a single instance. With multiple workers/hosts, use a shared store
+    (e.g. Redis via Flask-Limiter) so limits are enforced globally.
+    """
+
+    def __init__(self) -> None:
+        self._hits: dict[str, deque] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def check(self, key: str, limit: int, window: int) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            q = self._hits[key]
+            while q and now - q[0] > window:
+                q.popleft()
+            if len(q) >= limit:
+                return False
+            q.append(now)
+            return True
+
+
+limiter = RateLimiter()
+
+
+def enforce_rate_limit(key: str, limit: int, window: int) -> None:
+    if not limiter.check(key, limit, window):
+        log.warning("Rate limit hit: %r", key)
+        raise ApiError(429, "Too many requests. Please try again later.")
+
+
+def client_ip() -> str:
+    # Deliberately NOT trusting X-Forwarded-For (spoofable). If you deploy behind a
+    # proxy, wrap the app with werkzeug.middleware.proxy_fix.ProxyFix configured
+    # for the exact number of trusted proxies.
+    return request.remote_addr or "unknown"
+
+
+def hash_token(token: str) -> str:
+    # Tokens are 256-bit random values, so a fast hash is appropriate here.
+    # Storing only the hash means a DB leak does not expose usable tokens.
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# Used to equalize login timing when the username does not exist (prevents user
+# enumeration through response-time differences).
+_DUMMY_HASH = generate_password_hash(secrets.token_urlsafe(16), method="scrypt")
+
+
+def json_body() -> dict:
+    if not request.is_json:
+        raise ApiError(415, "Content-Type must be application/json")
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise ApiError(400, "Request body must be a JSON object")
+    return data
+
+
+@app.after_request
+def set_security_headers(resp):
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+    # Only meaningful over HTTPS (terminate TLS at your reverse proxy).
+    resp.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return resp
+
+
+# --------------------------------------------------------------------------- #
+# Validation
+# --------------------------------------------------------------------------- #
+
+
+def validate_credentials(data: dict, *, enforce_policy: bool) -> tuple[str, str]:
+    username, password = data.get("username"), data.get("password")
+    if not isinstance(username, str) or not isinstance(password, str):
+        raise ApiError(400, "username and password must be strings")
+
+    username = username.strip().lower()
+    errors = {}
+    if not USERNAME_RE.fullmatch(username):
+        errors["username"] = "3-32 chars: lowercase letters, digits, '_', '.', '-'"
+    if len(password) > PASSWORD_MAX:
+        errors["password"] = f"must be at most {PASSWORD_MAX} characters"
+    elif enforce_policy and len(password) < PASSWORD_MIN:
+        errors["password"] = f"must be at least {PASSWORD_MIN} characters"
+    if errors:
+        raise ApiError(400, "Validation failed", errors)
+    return username, password
+
+
+def validate_note(data: dict, *, partial: bool) -> dict:
+    unknown = set(data) - set(NOTE_FIELDS)
+    if unknown:
+        raise ApiError(400, "Unknown fields", {"fields": sorted(unknown)})
+
+    errors: dict[str, str] = {}
+    clean: dict[str, str] = {}
+
+    if "title" in data:
+        title = data["title"]
+        if not isinstance(title, str):
+            errors["title"] = "must be a string"
+        else:
+            title = title.strip()
+            if not 1 <= len(title) <= TITLE_MAX:
+                errors["title"] = f"must be 1-{TITLE_MAX} characters"
+            elif "\x00" in title:
+                errors["title"] = "contains invalid characters"
+            else:
+                clean["title"] = title
+    elif not partial:
+        errors["title"] = "is required"
+
+    if "content" in data:
+        content = data["content"]
+        if not isinstance(content, str):
+            errors["content"] = "must be a string"
+        elif len(content) > CONTENT_MAX:
+            errors["content"] = f"must be at most {CONTENT_MAX} characters"
+        elif "\x00" in content:
+            errors["content"] = "contains invalid characters"
+        else:
+            clean["content"] = content
+    elif not partial:
+        errors["content"] = "is required"
+
+    if errors:
+        raise ApiError(400, "Validation failed", errors)
+    if partial and not clean:
+        raise ApiError(400, "Provide at least one of: title, content")
+    return clean
+
+
+def int_arg(name: str, default: int, lo: int, hi: int) -> int:
+    raw = request.args.get(name)
+    if raw is None:
+        return default
+    if not DIGITS_RE.fullmatch(raw):  # ASCII digits only
+        raise ApiError(400, f"'{name}' must be a non-negative integer")
+    value = int(raw)
+    if not lo <= value <= hi:
+        raise ApiError(400, f"'{name}' must be between {lo} and {hi}")
+    return value
+
+
+# --------------------------------------------------------------------------- #
+# Authentication
+# --------------------------------------------------------------------------- #
+
+
+def require_auth(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        header = request.headers.get("Authorization", "")
+        scheme, _, token = header.partition(" ")
+        if scheme.lower() != "bearer" or not token or len(token) > 256:
+            raise ApiError(401, "Authentication required")
+
+        row = get_db().execute(
+            "SELECT user_id FROM tokens WHERE token_hash = ? AND expires_at > ?",
+            (hash_token(token), int(time.time())),
+        ).fetchone()
+        if row is None:
+            raise ApiError(401, "Invalid or expired token")
+
+        g.user_id = row["user_id"]
+        g.token_hash = hash_token(token)
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+@app.post("/api/register")
+def register():
+    enforce_rate_limit(f"register:{client_ip()}", limit=10, window=3600)
+    username, password = validate_credentials(json_body(), enforce_policy=True)
+
+    # Strong, salted, memory-hard hash (scrypt) via Werkzeug.
+    pw_hash = generate_password_hash(password, method="scrypt")
+    db = get_db()
+    try:
+        cur = db.execute(
+            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+            (username, pw_hash, now_iso()),
+        )
+        db.commit()
+    except sqlite3.IntegrityError:
+        raise ApiError(409, "Username is not available")
+    log.info("User registered: id=%d", cur.lastrowid)
+    return jsonify({"id": cur.lastrowid, "username": username}), 201
+
+
+@app.post("/api/login")
+def login():
+    ip = client_ip()
+    enforce_rate_limit(f"login:ip:{ip}", limit=20, window=300)
+    username, password = validate_credentials(json_body(), enforce_policy=False)
+    # Per-account throttle slows distributed guessing against a single user.
+    enforce_rate_limit(f"login:user:{username}", limit=8, window=300)
+
+    db = get_db()
+    user = db.execute(
+        "SELECT id, password_hash FROM users WHERE username = ?", (username,)
+    ).fetchone()
+
+    # Always run one hash verification so timing doesn't reveal valid usernames.
+    stored = user["password_hash"] if user else _DUMMY_HASH
+    ok = check_password_hash(stored, password)
+    if not (user and ok):
+        log.warning("Failed login for %r from %s", username, ip)
+        raise ApiError(401, "Invalid credentials")
+
+    now = int(time.time())
+    db.execute("DELETE FROM tokens WHERE expires_at <= ?", (now,))  # housekeeping
+    token = secrets.token_urlsafe(32)  # 256 bits from the OS CSPRNG
+    db.execute(
+        "INSERT INTO tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+        (user["id"], hash_token(token), now + TOKEN_TTL_SECONDS),
+    )
+    db.commit()
+    return jsonify({"token": token, "token_type": "Bearer", "expires_in": TOKEN_TTL_SECONDS})
+
+
+@app.post("/api/logout")
+@require_auth
+def logout():
+    db = get_db()
+    db.execute("DELETE FROM tokens WHERE token_hash = ?", (g.token_hash,))
+    db.commit()
+    return "", 204
+
+
+# --------------------------------------------------------------------------- #
+# Notes CRUD  (every query is scoped to the authenticated user -> no IDOR)
+# --------------------------------------------------------------------------- #
+
+NOTE_COLUMNS = "id, title, content, created_at, updated_at"
+
+
+def fetch_note(note_id: int) -> sqlite3.Row:
+    row = get_db().execute(
+        f"SELECT {NOTE_COLUMNS} FROM notes WHERE id = ? AND user_id = ?",
+        (note_id, g.user_id),
+    ).fetchone()
+    if row is None:
+        # 404 (not 403) so we don't reveal whether another user's note exists.
+        raise ApiError(404, "Note not found")
+    return row
+
+
+@app.post("/api/notes")
+@require_auth
+def create_note():
+    data = validate_note(json_body(), partial=False)
+    ts = now_iso()
+    db = get_db()
+    cur = db.execute(
+        "INSERT INTO notes (user_id, title, content, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (g.user_id, data["title"], data["content"], ts, ts),
+    )
+    db.commit()
+    return jsonify(dict(fetch_note(cur.lastrowid))), 201
+
+
+@app.get("/api/notes")
+@require_auth
+def list_notes():
+    limit = int_arg("limit", default=20, lo=1, hi=100)
+    offset = int_arg("offset", default=0, lo=0, hi=1_000_000)
+    db = get_db()
+    rows = db.execute(
+        f"SELECT {NOTE_COLUMNS} FROM notes WHERE user_id = ? "
+        "ORDER BY id DESC LIMIT ? OFFSET ?",
+        (g.user_id, limit, offset),
+    ).fetchall()
+    total = db.execute(
+        "SELECT COUNT(*) AS n FROM notes WHERE user_id = ?", (g.user_id,)
+    ).fetchone()["n"]
+    return jsonify(
+        {"items": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset}
+    )
+
+
+@app.get("/api/notes/<int:note_id>")
+@require_auth
+def get_note(note_id: int):
+    return jsonify(dict(fetch_note(note_id)))
+
+
+def _update_note(note_id: int, *, partial: bool):
+    fetch_note(note_id)  # existence + ownership check
+    data = validate_note(json_body(), partial=partial)
+
+    # Column names come from the validated whitelist (NOTE_FIELDS), never from user
+    # input; all values are bound as parameters.
+    assignments = ", ".join(f"{col} = ?" for col in data if col in NOTE_FIELDS)
+    params = [data[col] for col in data if col in NOTE_FIELDS]
+    params += [now_iso(), note_id, g.user_id]
+
+    db = get_db()
+    db.execute(
+        f"UPDATE notes SET {assignments}, updated_at = ? WHERE id = ? AND user_id = ?",
+        params,
+    )
+    db.commit()
+    return jsonify(dict(fetch_note(note_id)))
+
+
+@app.put("/api/notes/<int:note_id>")
+@require_auth
+def replace_note(note_id: int):
+    return _update_note(note_id, partial=False)
+
+
+@app.patch("/api/notes/<int:note_id>")
+@require_auth
+def patch_note(note_id: int):
+    return _update_note(note_id, partial=True)
+
+
+@app.delete("/api/notes/<int:note_id>")
+@require_auth
+def delete_note(note_id: int):
+    db = get_db()
+    cur = db.execute(
+        "DELETE FROM notes WHERE id = ? AND user_id = ?", (note_id, g.user_id)
+    )
+    db.commit()
+    if cur.rowcount == 0:
+        raise ApiError(404, "Note not found")
+    return "", 204
+
+
+# --------------------------------------------------------------------------- #
+# Entrypoint
+# --------------------------------------------------------------------------- #
+
+init_db()
+
+if __name__ == "__main__":
+    # debug=False is explicit: the Werkzeug debugger allows remote code execution.
+    app.run(host=HOST, port=PORT, debug=False)

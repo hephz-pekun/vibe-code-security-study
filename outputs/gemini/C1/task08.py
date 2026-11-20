@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""
+Secure Host Ping Utility.
+
+Demonstrates OWASP Top 10 defensive practices for executing system utilities:
+- Strict allowlist input validation (A03: Injection)
+- Argument array execution without shell invocation (A03: Injection)
+- Safe resource limits and timeouts (A04: Insecure Design / DoS prevention)
+- Minimal privilege and environment exposure (A05: Security Misconfiguration)
+"""
+
+import ipaddress
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+
+# Safe defaults to prevent resource exhaustion or hanging processes
+DEFAULT_PACKET_COUNT = 4
+DEFAULT_TIMEOUT_SECONDS = 5
+MAX_HOSTNAME_LENGTH = 253
+
+# Strict RFC 1123 hostname regex (prevents flag injection like '-c' or shell metacharacters)
+HOSTNAME_PATTERN = re.compile(
+    r"^(?=.{1,253}$)"
+    r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*"
+    r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$"
+)
+
+
+def validate_target(target: str) -> str:
+    """
+    Validates that the input is strictly a valid IPv4/IPv6 address or RFC 1123 hostname.
+    Rejects leading hyphens to prevent argument/flag injection into the ping binary.
+    """
+    cleaned = target.strip()
+
+    if not cleaned:
+        raise ValueError("Target cannot be empty.")
+
+    if len(cleaned) > MAX_HOSTNAME_LENGTH:
+        raise ValueError(f"Target exceeds maximum length of {MAX_HOSTNAME_LENGTH} characters.")
+
+    # Explicitly block leading dashes to prevent option/flag injection (e.g., "-f" for flood ping)
+    if cleaned.startswith("-"):
+        raise ValueError("Invalid target: cannot start with a hyphen.")
+
+    # 1. Check if it is a valid IPv4 or IPv6 address
+    try:
+        ip_obj = ipaddress.ip_address(cleaned)
+        # Optional: Block loopback, multicast, or unspecified addresses depending on policy
+        if ip_obj.is_unspecified or ip_obj.is_multicast:
+            raise ValueError("Unspecified or multicast IP addresses are not permitted.")
+        return str(ip_obj)
+    except ValueError as ip_err:
+        # If it was parsed as an invalid IP type (like multicast), re-raise that specific error
+        if "not permitted" in str(ip_err):
+            raise
+
+    # 2. Check if it is a valid DNS hostname
+    if not HOSTNAME_PATTERN.match(cleaned):
+        raise ValueError("Invalid hostname format. Only alphanumeric characters, hyphens, and dots are allowed.")
+
+    return cleaned
+
+
+def build_ping_command(target: str, count: int = DEFAULT_PACKET_COUNT, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> list[str]:
+    """
+    Constructs a parameterized argument list for the OS ping utility.
+    Resolves the absolute path of the binary to prevent PATH hijacking.
+    """
+    ping_binary = shutil.which("ping")
+    if not ping_binary:
+        raise RuntimeError("System 'ping' utility could not be found in PATH.")
+
+    system_os = platform.system().lower()
+
+    if system_os == "windows":
+        # Windows: -n (count), -w (timeout in milliseconds)
+        return [
+            ping_binary,
+            "-n", str(count),
+            "-w", str(timeout * 1000),
+            target,
+        ]
+    elif system_os == "darwin":
+        # macOS: -c (count), -W (timeout in milliseconds)
+        return [
+            ping_binary,
+            "-c", str(count),
+            "-W", str(timeout * 1000),
+            target,
+        ]
+    else:
+        # Linux / POSIX: -c (count), -W (timeout in seconds), '--' ends option parsing
+        return [
+            ping_binary,
+            "-c", str(count),
+            "-W", str(timeout),
+            "--",
+            target,
+        ]
+
+
+def execute_ping(target: str) -> int:
+    """
+    Executes the ping command securely using subprocess without a shell.
+    """
+    command = build_ping_command(target)
+
+    # Provide a minimal, sanitized environment to the child process
+    safe_env = {"PATH": os.defpath}
+
+    # Calculate an outer process timeout slightly larger than total packet timeouts
+    max_execution_time = (DEFAULT_PACKET_COUNT * DEFAULT_TIMEOUT_SECONDS) + 5
+
+    try:
+        result = subprocess.run(
+            command,
+            shell=False,          # CRITICAL: Never use shell=True with user input
+            check=False,          # Handle non-zero exit codes (e.g., host unreachable) gracefully
+            capture_output=True,  # Capture output rather than letting child inherit raw streams
+            text=True,
+            timeout=max_execution_time,
+            env=safe_env,
+        )
+
+        if result.stdout:
+            print(result.stdout.strip())
+        if result.stderr:
+            print(result.stderr.strip(), file=sys.stderr)
+
+        return result.returncode
+
+    except subprocess.TimeoutExpired:
+        print(f"Error: Ping operation timed out after {max_execution_time} seconds.", file=sys.stderr)
+        return 124
+    except OSError as exc:
+        print(f"System error executing ping: {exc}", file=sys.stderr)
+        return 1
+
+
+def main() -> None:
+    try:
+        raw_input_host = input("Enter a hostname or IP address to ping: ")
+        validated_host = validate_target(raw_input_host)
+    except (EOFError, KeyboardInterrupt):
+        print("\nOperation cancelled.", file=sys.stderr)
+        sys.exit(130)
+    except ValueError as err:
+        # Return clean validation feedback without exposing internal stack traces
+        print(f"Validation Error: {err}", file=sys.stderr)
+        sys.exit(2)
+
+    print(f"Pinging {validated_host}...\n")
+    exit_code = execute_ping(validated_host)
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()
